@@ -242,7 +242,7 @@ async def createproject(ctx, name=None):
       else: #Else if it found the category
         channel = await ctx.guild.create_text_channel(name=name, overwrites=overwrites, reason=None, category=category)
         invitelink = await channel.create_invite(max_uses=1, unique=True, max_age=120)
-        await ctx.author.send(invitelink)
+        await ctx.author.send(f'Here\'s a link to the project channel! Just in case your channel list is super long.\n{invitelink}')
     else:
       await ctx.send('There\'s already a project with this name!')
 
@@ -262,7 +262,7 @@ async def joinproject(ctx, name=None):
       overwrite.read_messages = True
       await channel.set_permissions(ctx.author, overwrite=overwrite)
       invitelink = await channel.create_invite(max_uses=1, unique=True, max_age=120)
-      await ctx.author.send(invitelink)
+      await ctx.author.send(f'If you\'re lost in the sauce, here\'s a link directly to the channel! Just in case it\'s hidden on your channel list.\n{invitelink}')
     else:
       await ctx.send(f'There\'s no project with this name.')
     
