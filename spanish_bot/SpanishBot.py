@@ -25,6 +25,8 @@ async def on_command_error(ctx, error):
 async def ping(ctx):
   await ctx.send(f'Pong! The bot\'s latency is {round(bot.latency * 1000)}ms')
 
+#----- General Response Commands -----#
+
 @bot.command(help='Hola?', category='General Commands')
 async def hola(ctx):
   await ctx.send(f'Hola {ctx.author.mention}! :wave:')
@@ -79,6 +81,8 @@ async def faq2(ctx):
 @bot.command(help='Responds to frequently asked questions.', category='General Commands')
 async def faqs(ctx):
   await ctx.send(f'**FAQ#1**:  Can you make a channel/category/server for my target language?\n\nChannels: Upon request, any language can get a role and a channel. Ask in server-feedback and we\'ll add it. New channels are added once per week in bulk.\n\nCategories: When a community grows, they can request a category, multiple channels, and a google doc for resources.\n\nServers: When a community has a dedicated admin and 25 active members, they can request a dedicated server.\n\n**FAQ#2**: Is there a server for X language?\nThere are currently servers for Japanese, Spanish, English, Korean, Russian, French, German, Mandarin, Cantonese, Portuguese, Italian, Arabic')
+
+#----- Auto Thread Channels -----#
 
 @bot.command(hidden=True)
 @commands.has_permissions(manage_channels=True)
@@ -152,6 +156,8 @@ async def on_message(message):
   else:
     return
 
+#----- Randomizer Commands -----#
+
 @bot.command(help='Roll a any number of dice with any number of sides')
 async def roll(ctx, dice='1d20', mod='+0'):
   result = 0
@@ -178,6 +184,8 @@ async def flipacoin(ctx):
   coin = random.choice(options)
   await ctx.send(f'{ctx.author.mention}, the coin landed on **{coin}**!')
 
+#----- Misc Commands -----#
+
 @bot.command(help='Cheese', aliases=['cheese', 'mycheze', 'mycheezy'])
 async def mycheesy(ctx):
   await ctx.send(':cheese:')
@@ -186,7 +194,7 @@ async def mycheesy(ctx):
 async def gorgpag(ctx):
   await ctx.send(':bacon:')
 
-#------ Doc Commands -------#
+#----- Doc Commands -----#
 
 @bot.command(help='Show the Spanish Resource Doc link', aliases=['espdoc', 'spadoc'])
 async def spanishdoc(ctx, target='False'):
@@ -198,6 +206,108 @@ async def spanishdoc(ctx, target='False'):
 @bot.command(hidden=True, aliases=['japanesedoc', 'japandoc'])
 async def jpdoc(ctx):
   await ctx.send(f'{doclist.docjp}')
+  
+#----- April Update -----# 
+
+@bot.command(hidden=True)
+@commands.has_permissions(manage_channels=True)
+async def createproject(ctx, name=None):
+  if name is None:
+    await ctx.send(f'Please give your project a name. Use `!createproject [projectname]`.')
+  else:
+    name = name.lower()
+    try:
+      projects = pickle.load(open('projects.dat', 'rb'))
+    except:
+      projects = []
+    if name not in projects:
+      projects.append(name)
+      pickle.dump(projects, open('projects.dat', 'wb'))
+      category_name = "COMMUNITY PROJECTS"
+      await ctx.send("Setting up channel!")
+      category = discord.utils.get(ctx.guild.categories, name=category_name)
+      user = ctx.author.id
+      overwrites = {
+        ctx.guild.default_role: discord.PermissionOverwrite(read_messages=False), 
+        ctx.guild.me: discord.PermissionOverwrite(read_messages=True), 
+        ctx.author: discord.PermissionOverwrite(read_messages=True)
+        }
+
+      if category is None: #If there's no category matching with the `name`
+        category = await ctx.guild.create_category(category_name, reason=None)
+        channel = await ctx.guild.create_text_channel(name=name, overwrites=overwrites, reason=None, category=category)
+        invitelink = await channel.create_invite(max_uses=1, unique=True, max_age=120)
+        await ctx.author.send(invitelink)
+
+      else: #Else if it found the category
+        channel = await ctx.guild.create_text_channel(name=name, overwrites=overwrites, reason=None, category=category)
+        invitelink = await channel.create_invite(max_uses=1, unique=True, max_age=120)
+        await ctx.author.send(invitelink)
+    else:
+      await ctx.send('There\'s already a project with this name!')
+
+@bot.command()
+async def joinproject(ctx, name=None):
+  if name is None:
+    await ctx.send(f'Which project would you like to join? Please use `!joinproject [projectname]`.')
+  else:
+    name = name.lower()
+    try:
+      projects = pickle.load(open('projects.dat', 'rb'))
+    except:
+      await ctx.send(f'There are no open projects.')
+    if name in projects:
+      channel = discord.utils.get(ctx.guild.channels, name=name)
+      overwrite = discord.PermissionOverwrite()
+      overwrite.read_messages = True
+      await channel.set_permissions(ctx.author, overwrite=overwrite)
+      invitelink = await channel.create_invite(max_uses=1, unique=True, max_age=120)
+      await ctx.author.send(invitelink)
+    else:
+      await ctx.send(f'There\'s no project with this name.')
+    
+@bot.command(hidden=True, aliases=['archiveproject'])
+@commands.has_permissions(manage_channels=True)
+async def endproject(ctx, name=None):
+  if name is None:
+    await ctx.send(f'Which project would you like to archive? Please use `!endproject [projectname]`.')
+  else:
+    name = name.lower()
+    try:
+      projects = pickle.load(open('projects.dat', 'rb'))
+    except:
+      await ctx.send(f'There are no open projects.')
+    if name in projects:
+      category = discord.utils.get(ctx.guild.categories, name='ARCHIVE')
+      if category is None: #If there's no category matching with the `name`
+        category = await ctx.guild.create_category('ARCHIVE', reason=None)
+        channel = discord.utils.get(ctx.guild.channels, name=name)
+        await channel.edit(category=category)
+        await ctx.send(f'Project \'{name}\' has been moved to the archive.')
+      else: #Else if it found the category
+        channel = discord.utils.get(ctx.guild.channels, name=name)
+        await channel.edit(category=category)
+        await ctx.send(f'Project \'{name}\' has been moved to the archive.')
+    else:
+      await ctx.send(f'There\'s no project with this name.')
+
+#----- Requested Commands -----#
+
+@bot.command(aliases=['2L2', 'twol2', 'twoltwo', 'twoLtwo', '2l2'])
+async def twoL2(ctx):
+  await ctx.send(f'https://www.youtube.com/watch?v=PlteftANWoE')
+
+@bot.command(aliases=['STAGE1', 'Stage1', 'StageOne', 'Stage_1'])
+async def stage1(ctx):
+  await ctx.send(f'Develop an immersion habit. Study some grammar, find a way to study vocabulary (memrise, quantized, anki etc. ), find content that is compelling and comprehensible ( things you have watched before, subjects that inherently interest you ). When you start sentence mining, you are stage 2a.')
+
+@bot.command(aliases=['SentenceMine', 'sentence_mine', 'sentencemining', 'sentence_mining'])
+async def sentencemine(ctx):
+  await ctx.send(f'When you encounter a sentence where either one word is unknown, or you just don\’t understand the grammar. We call that 1T. This sentence may be recorded by making it a card on anki or a physical one. The point is that you are learning words most relevant to your immersion past the first 1k words.')
+
+@bot.command(aliases=['shadow', 'languageparent', 'langparent'])
+async def shadowing(ctx):
+  await ctx.send(f'The point of this exercise is to practice imitating full native speed to get used to the sounds, rhythm and mannerisms of your language parent (the one you want to most speak like). You can find the article here, <https://refold.la/roadmap/stage-3/b/pronunciation-training>')
 
 parser = argparse.ArgumentParser(description='Bot de español')
 parser.add_argument('auth_key', type=str, help='the key to authenticate this discord bot with discord')
