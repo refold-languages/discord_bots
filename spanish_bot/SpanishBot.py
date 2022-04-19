@@ -25,6 +25,14 @@ async def on_command_error(ctx, error):
 async def ping(ctx):
   await ctx.send(f'Pong! The bot\'s latency is {round(bot.latency * 1000)}ms')
 
+@bot.event
+async def on_message_delete(message):
+  embed = discord.Embed(title = f'A message was deleted in {message.guild.name}', description = '', color = 0x4287f5)
+  embed.add_field(name = 'The deleted message is:', value = f'{message.content}', inline = True)
+  embed.add_field(name = 'It was sent by:', value = f'{message.author.mention}', inline = True)
+  channel = bot.get_channel(966080907477909514)
+  await channel.send('', embed=embed)
+
 #----- General Response Commands -----#
 
 @bot.command(help='Hola?', category='General Commands')
