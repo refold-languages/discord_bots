@@ -33,6 +33,20 @@ async def on_message_delete(message):
   channel = bot.get_channel(966080907477909514)
   await channel.send('', embed=embed)
 
+@bot.event
+async def on_raw_reaction_add(payload):
+  user = await bot.fetch_user(payload.user_id)
+  channel = await bot.fetch_channel(payload.channel_id)
+  message = await channel.fetch_message(payload.message_id)
+  if str(payload.emoji) == '🔖':
+    server = await bot.fetch_guild(payload.guild_id)
+    embed = discord.Embed(title = f'You made a bookmark!', description='', color=0xc91f16)
+    embed.add_field(name = 'The message said:', value = f'{message.content}', inline = True)
+    msg = await user.send(f'Click to view original message: https://discord.com/channels/{server.id}/{channel.id}/{message.id}', embed=embed)
+    await msg.add_reaction('❌')
+  if str(payload.emoji) == '❌' and user != bot.user and message.author == bot.user:
+    await message.delete()
+
 #----- General Response Commands -----#
 
 @bot.command(help='Hola?', category='General Commands')
