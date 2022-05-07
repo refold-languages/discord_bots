@@ -229,22 +229,56 @@ async def spanishdoc(ctx, target='False'):
 async def jpdoc(ctx):
   await ctx.send(f'{doclist.docjp}')
   
-#----- April Update -----# 
+#----- Community Projects -----# 
 
 @bot.command(hidden=True)
 @commands.has_permissions(manage_channels=True)
-async def createproject(ctx, name=None):
+async def json_migrate(ctx):
+  projects = pickle.load(open('projects.dat', 'rb'))
+  dict = {}
+  for i in projects:
+    dict[i] = ['description', 'leader']
+  with open('projects.json', 'w') as file:
+    json.dump(dict , file)
+
+@bot.command(hidden=True)
+@commands.has_permissions(manage_channels=True)
+async def editproject(ctx, project, leader, description):
+  with open('projects.json') as file:
+    project_list = json.load(file)
+  project_list[project] = [leader, description]
+  with open('projects.json', 'w') as file:
+    json.dump(project_list , file)
+
+@bot.command(hidden=True)
+async def listprojects(ctx):
+  with open('projects.json') as file:
+    project_list = json.load(file)
+  embed = discord.Embed(title = 'The current projects are:', description='', color= 0x8566FF)
+  for i in project_list:
+    embed.add_field(name = i, value = f'*Leader*: {project_list[i][0]} \n*Description*: {project_list[i][1]}', inline=False)
+  await ctx.send('', embed=embed)
+
+@bot.command(hidden=True)
+@commands.has_permissions(manage_channels=True)
+async def createproject(ctx, name=None, leader=None, description=None):
   if name is None:
-    await ctx.send(f'Please give your project a name. Use `!createproject [projectname]`.')
+    await ctx.send(f'Please give your project a name. Use `!createproject [projectname] [] "[]"`.')
+  elif leader is None:
+    await ctx.send(f'Please give your project a leader. Use `!createproject [projectname] [] "[]"`.')
+  elif description is None:
+    await ctx.send(f'Please give your project a description. Use `!createproject [projectname] [] "[]"`.')
   else:
     name = name.lower()
-    try:
-      projects = pickle.load(open('projects.dat', 'rb'))
-    except:
-      projects = []
+    if path.exists('projects.json'):
+      with open('projects.json') as file:
+        projects = json.load(file)
+    else:
+      projects = {}
     if name not in projects:
-      projects.append(name)
-      pickle.dump(projects, open('projects.dat', 'wb'))
+      projects[name] = [leader, description]
+      with open('projects.json', 'w') as file:
+        json.dump(projects , file)
       category_name = "COMMUNITY PROJECTS"
       await ctx.send("Setting up channel!")
       category = discord.utils.get(ctx.guild.categories, name=category_name)
@@ -274,9 +308,10 @@ async def joinproject(ctx, name=None):
     await ctx.send(f'Which project would you like to join? Please use `!joinproject [projectname]`.')
   else:
     name = name.lower()
-    try:
-      projects = pickle.load(open('projects.dat', 'rb'))
-    except:
+    if path.exists('projects.json'):
+      with open('projects.json') as file:
+        projects = json.load(file)
+    else:
       await ctx.send(f'There are no open projects.')
     if name in projects:
       channel = discord.utils.get(ctx.guild.channels, name=name)
@@ -295,9 +330,10 @@ async def endproject(ctx, name=None):
     await ctx.send(f'Which project would you like to archive? Please use `!endproject [projectname]`.')
   else:
     name = name.lower()
-    try:
-      projects = pickle.load(open('projects.dat', 'rb'))
-    except:
+    if path.exists('projects.json'):
+      with open('projects.json') as file:
+        projects = json.load(file)
+    else:
       await ctx.send(f'There are no open projects.')
     if name in projects:
       category = discord.utils.get(ctx.guild.categories, name='ARCHIVE')
@@ -305,11 +341,13 @@ async def endproject(ctx, name=None):
         category = await ctx.guild.create_category('ARCHIVE', reason=None)
         channel = discord.utils.get(ctx.guild.channels, name=name)
         await channel.edit(category=category)
-        await ctx.send(f'Project \'{name}\' has been moved to the archive.')
       else: #Else if it found the category
         channel = discord.utils.get(ctx.guild.channels, name=name)
         await channel.edit(category=category)
-        await ctx.send(f'Project \'{name}\' has been moved to the archive.')
+      del projects[name]
+      with open('projects.json', 'w') as file:
+        json.dump(projects , file)
+      await ctx.send(f'Project \'{name}\' has been moved to the archive.')
     else:
       await ctx.send(f'There\'s no project with this name.')
 
