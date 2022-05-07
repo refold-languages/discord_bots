@@ -5,6 +5,8 @@ import pickle
 import random
 import doclist
 import argparse
+import json
+from os import path
 
 intents = discord.Intents.default()
 intents.members = True
