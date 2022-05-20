@@ -1,0 +1,13 @@
+{"intents": [
+    {"tag": "HowToUseBot-Basic",
+     "patterns": ["How do I use you", "How do you work"],
+     "responses": ["Unfortunately, I'm a simple bot prone to mistakes. However, if you ask the right questions, I should provide answers to most of your basic questions. If I don't respond or if I give the wrong answer, try asking the question another way. I work best with direct questions such as **How should I get started?**. Try to avoid story questions such as **I've been studying Japanese for over a year and feel I have a good foundation. What might be the best way to get started with such a situation?**. These long story questions confuuse me so please try and think of the most direct way to ask me your question. Thank you!"],
+     "Field-1": ["", "", ""],
+     "Field-2": ["", "", ""],
+     "Field-3": ["", "", ""],
+     "Field-4": ["", "", ""],
+     "Field-5": ["", "", ""],
+     "Field-6": ["", "", ""],
+     "Related-Q":"How do I get started?",
+     "context_set": ""
+    },
