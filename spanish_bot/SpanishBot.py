@@ -371,6 +371,14 @@ async def sentencemine(ctx):
 async def shadowing(ctx):
   await ctx.send(f'The point of this exercise is to practice imitating full native speed to get used to the sounds, rhythm and mannerisms of your language parent (the one you want to most speak like). You can find the article here, <https://refold.la/roadmap/stage-3/b/pronunciation-training>')
 
+@bot.command()
+@commands.has_permissions(manage_channels=True)
+async def avatar(ctx, target:discord.Member=None):
+  if target is None:
+    await ctx.send(f'{ctx.author.avatar}')
+  else:
+    await ctx.send(f'{target.avatar}')
+
 parser = argparse.ArgumentParser(description='Bot de español')
 parser.add_argument('auth_key', type=str, help='the key to authenticate this discord bot with discord')
 args = parser.parse_args()
