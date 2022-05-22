@@ -22,7 +22,7 @@ const setupOnMessage_1 = require("./setupOnMessage");
 let client = new discord_js_1.default.Client();
 client.commands = new discord_js_1.default.Collection();
 (() => __awaiter(void 0, void 0, void 0, function* () {
-    const token = require('../token.json');
+    const token = process.env.TOKEN || config_json_1.default.token;
     yield client.login(token).catch((error) => {
         console.error(error);
         process.exit(0);
