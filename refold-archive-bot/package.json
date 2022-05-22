@@ -1,0 +1,29 @@
+{
+  "name": "refold-archive-bot",
+  "version": "1.0.0",
+  "description": "An archive bot to assist in archiving messages, whether it be for resource sharing or moderation",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "tsc && node dist/src/index.js",
+    "dev": "cross-env NODE_ENV=dev ts-node-dev --respawn --transpile-only ./src/index.ts",
+    "build": "tsc"
+  },
+  "keywords": [],
+  "author": "Tyler Greulich",
+  "license": "GPL-3.0-or-later",
+  "dependencies": {
+    "discord.js": "^12.5.1",
+    "dotenv": "^10.0.0",
+    "fs": "0.0.1-security",
+    "sequelize": "^6.3.5",
+    "sqlite3": "^5.0.0"
+  },
+  "devDependencies": {
+    "cross-env": "^7.0.3",
+    "eslint": "^7.28.0",
+    "nodemon": "^2.0.7",
+    "ts-node-dev": "^1.1.6",
+    "typescript": "^4.3.2"
+  }
+}
