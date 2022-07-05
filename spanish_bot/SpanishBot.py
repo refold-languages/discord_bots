@@ -40,13 +40,14 @@ async def on_raw_reaction_add(payload):
   user = await bot.fetch_user(payload.user_id)
   channel = await bot.fetch_channel(payload.channel_id)
   message = await channel.fetch_message(payload.message_id)
-  if str(payload.emoji) == '🔖':
+  emoji = payload.emoji
+  if str(emoji) == '🔖':
     server = await bot.fetch_guild(payload.guild_id)
     embed = discord.Embed(title = f'You made a bookmark!', description='', color=0xc91f16)
     embed.add_field(name = 'The message said:', value = f'{message.content}', inline = True)
     msg = await user.send(f'Click to view original message: https://discord.com/channels/{server.id}/{channel.id}/{message.id}', embed=embed)
     await msg.add_reaction('❌')
-  if str(payload.emoji) == '❌' and user != bot.user and message.author == bot.user:
+  if str(emoji) == '❌' and user != bot.user and message.author == bot.user:
     await message.delete()
 
 #----- General Response Commands -----#
@@ -169,16 +170,49 @@ async def clearthreadchannels(ctx):
   pickle.dump(thread_channels, open('thread_channels.dat', 'wb'))
   await ctx.send('Channels cleared.')
 
+@bot.command(hidden=True)
+@commands.has_permissions(manage_channels=True)
+async def setpollchannel(ctx):
+  channel = ctx.channel.id
+  try:
+    poll_channels = pickle.load(open('poll_channels.dat', 'rb'))
+  except:
+    poll_channels = []
+  if channel not in poll_channels:
+    poll_channels.append(channel)
+    pickle.dump(poll_channels, open('poll_channels.dat', 'wb'))
+    await ctx.send('Done.')
+  else:
+    await ctx.send('This channel is already in my list!')
+
+@bot.command(hidden=True)
+@commands.has_permissions(manage_channels=True)
+async def removepollchannel(ctx):
+  channel = ctx.channel.id
+  try:
+    poll_channels = pickle.load(open('poll_channels.dat', 'rb'))
+  except:
+    await ctx.send('This channel isn\'t in my list.')
+  if channel in poll_channels:
+    poll_channels.remove(channel)
+    pickle.dump(poll_channels, open('poll_channels.dat', 'wb'))
+    await ctx.send('Done.')
+  else:
+    await ctx.send('This channel isn\'t in my list.')
+
 @bot.listen('on_message')
 async def on_message(message):
-  thread_channels = pickle.load(open('thread_channels.dat', 'rb'))
-  if message.channel.id in thread_channels and message.author != bot.user and not message.content.startswith(bot.command_prefix):
-    title = str(message.content)
-    title = title.split()[:5]
-    title = str(" ".join(title)) + '...'
-    await message.create_thread(name=str(title))
-  else:
-    return
+  if message.author != bot.user and not message.content.startswith(bot.command_prefix):
+    thread_channels = pickle.load(open('thread_channels.dat', 'rb'))
+    poll_channels = pickle.load(open('poll_channels.dat', 'rb'))
+    if message.channel.id in thread_channels:
+      title = str(message.content)
+      title = title.split()[:5]
+      title = str(" ".join(title)) + '...'
+      await message.create_thread(name=str(title))
+    elif message.channel.id in poll_channels:
+      await message.add_reaction('<:ReUpvote:993947837836558417>')
+      await message.add_reaction('<:ReDownvote:993947836796383333>')
 
 #----- Randomizer Commands -----#
 
