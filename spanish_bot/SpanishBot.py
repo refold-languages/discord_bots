@@ -29,11 +29,12 @@ async def ping(ctx):
 
 @bot.event
 async def on_message_delete(message):
-  embed = discord.Embed(title = f'A message was deleted in {message.guild.name}', description = '', color = 0x4287f5)
-  embed.add_field(name = 'The deleted message is:', value = f'{message.content}', inline = True)
-  embed.add_field(name = 'It was sent by:', value = f'{message.author.mention}', inline = True)
-  channel = bot.get_channel(966080907477909514)
-  await channel.send('', embed=embed)
+  if message.guild.id != 757802790532677683:
+    embed = discord.Embed(title = f'A message was deleted in {message.guild.name}', description = '', color = 0x4287f5)
+    embed.add_field(name = 'The deleted message is:', value = f'{message.content}', inline = True)
+    embed.add_field(name = 'It was sent by:', value = f'{message.author.mention}', inline = True)
+    channel = bot.get_channel(966080907477909514)
+    await channel.send('', embed=embed)
 
 @bot.event
 async def on_raw_reaction_add(payload):
