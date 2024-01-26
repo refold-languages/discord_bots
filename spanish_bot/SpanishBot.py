@@ -6,7 +6,9 @@ import random
 import doclist
 import argparse
 import json
+import os
 from os import path
+import csv
 
 intents = discord.Intents.default()
 intents.members = True
@@ -50,6 +52,25 @@ async def on_raw_reaction_add(payload):
     await msg.add_reaction('❌')
   if str(emoji) == '❌' and user != bot.user and message.author == bot.user:
     await message.delete()
+
+def load_video_data(filename):
+    videos = []
+    with open(filename, 'r') as file:
+        reader = csv.DictReader(file, delimiter='\t', fieldnames=['title', 'references', 'link'])
+        for row in reader:
+            row['references'] = row['references'].lower().split(', ')
+            videos.append(row)
+    return videos
+
+# Load the data at the start of your bot
+video_data = load_video_data('video_links.tsv')
+
+def find_video(query, video_data):
+    query = query.lower()
+    for video in video_data:
+        if query in video['references']:
+            return video['link']
+    return "No video found for your query."
 
 #----- General Response Commands -----#
 
@@ -237,7 +258,7 @@ async def roll(ctx, dice='1d20', mod='+0'):
   else:
     await ctx.send(f'{ctx.author.mention}, you got a {str(result)}! You rolled {dice} and modified it with {mod}.')
 
-@bot.command(help='Just flips a coin. Pretty easy.', aliases=['coinflip'])
+@bot.command(help='Just flips a coin. Pretty easy.', aliases=['coinflip', 'flip'])
 async def flipacoin(ctx):
   options = ['Heads', 'Tails']
   coin = random.choice(options)
@@ -258,9 +279,9 @@ async def gorgpag(ctx):
 @bot.command(help='Show the Spanish Resource Doc link', aliases=['espdoc', 'spadoc'])
 async def spanishdoc(ctx, target='False'):
   if target == 'False':
-    await ctx.send(f'<http://refold.link/spanish>')
+    await ctx.send(f'<https://refold.link/spanish_resources>')
   else:
-    await ctx.send(f'{target} <http://refold.link/spanish>')
+    await ctx.send(f'{target} <https://refold.link/spanish_resources>')
 
 @bot.command(hidden=True, aliases=['japanesedoc', 'japandoc'])
 async def jpdoc(ctx):
@@ -413,6 +434,13 @@ async def avatar(ctx, target:discord.Member=None):
     await ctx.send(f'{ctx.author.avatar}')
   else:
     await ctx.send(f'{target.avatar}')
+
+#----- Video Commands -----#
+
+@bot.command(name='video')
+async def video(ctx, *, query: str):
+    video_link = find_video(query, video_data)
+    await ctx.send(video_link)
 
 parser = argparse.ArgumentParser(description='Bot de español')
 parser.add_argument('auth_key', type=str, help='the key to authenticate this discord bot with discord')
