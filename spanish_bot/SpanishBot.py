@@ -10,7 +10,7 @@ import os
 from os import path
 import csv
 
-intents = discord.Intents.default()
+intents = discord.Intents.all()
 intents.members = True
 bot = commands.Bot(intents=intents, command_prefix='!')
 #help_command = commands.DefaultHelpCommand(no_category = 'Commands')
@@ -38,20 +38,53 @@ async def on_message_delete(message):
     channel = bot.get_channel(966080907477909514)
     await channel.send('', embed=embed)
 
+def read_language_roles():
+    with open('/home/bena/Documents/DiscordBots/discord_bots/spanish_bot/language_roles.tsv', mode='r', encoding='utf-8') as file:
+        reader = csv.reader(file, delimiter='\t')
+        return {rows[0]: int(rows[1]) for rows in reader}
+
 @bot.event
 async def on_raw_reaction_add(payload):
   user = await bot.fetch_user(payload.user_id)
+  guild = await bot.fetch_guild(payload.guild_id)
+  member = await guild.fetch_member(payload.user_id)
   channel = await bot.fetch_channel(payload.channel_id)
   message = await channel.fetch_message(payload.message_id)
-  emoji = payload.emoji
-  if str(emoji) == '🔖':
+  emoji = str(payload.emoji)
+  if emoji == '🔖':
     server = await bot.fetch_guild(payload.guild_id)
     embed = discord.Embed(title = f'You made a bookmark!', description='', color=0xc91f16)
     embed.add_field(name = 'The message said:', value = f'{message.content}', inline = True)
     msg = await user.send(f'Click to view original message: https://discord.com/channels/{server.id}/{channel.id}/{message.id}', embed=embed)
     await msg.add_reaction('❌')
-  if str(emoji) == '❌' and user != bot.user and message.author == bot.user:
+  if emoji == '❌' and user != bot.user and message.author == bot.user:
     await message.delete()
+  if payload.channel_id == 1202719368237293648 or payload.channel_id == 934209764819361902:  # Check if the reaction is in the specified channel
+    server = await bot.fetch_guild(payload.guild_id)
+    language_roles = read_language_roles()
+    # Check if the emoji is in the TSV file and assign the role
+    if emoji in language_roles:
+      role_id = language_roles[emoji]
+      role = server.get_role(role_id)
+      if role:
+        await member.add_roles(role)
+    else:
+      # If the emoji is not in the list, remove the reaction
+      await message.remove_reaction(emoji, user)
+
+@bot.event
+async def on_raw_reaction_remove(payload):
+    if payload.channel_id == 1202719368237293648 or payload.channel_id == 934209764819361902:  # Check if the reaction is in the specified channel
+        guild = await bot.fetch_guild(payload.guild_id)
+        member = await guild.fetch_member(payload.user_id)  # Fetch the member
+        emoji = str(payload.emoji)
+        language_roles = read_language_roles()
+        # Check if the emoji is in the TSV file
+        if emoji in language_roles:
+            role_id = language_roles[emoji]
+            role = guild.get_role(role_id)
+            if role:
+                await member.remove_roles(role)  # Remove the role from the member
 
 def load_video_data(filename):
     videos = []
