@@ -119,14 +119,12 @@ async def on_raw_reaction_add(payload):
   if payload.channel_id == 1202719368237293648 or payload.channel_id == 934209764819361902:  # Check if the reaction is in the specified channel
     server = await bot.fetch_guild(payload.guild_id)
     language_roles = read_language_roles()
-    # Check if the emoji is in the TSV file and assign the role
     if emoji in language_roles:
       role_id = language_roles[emoji]
       role = server.get_role(role_id)
       if role:
         await member.add_roles(role)
     else:
-      # If the emoji is not in the list, remove the reaction
       await message.remove_reaction(emoji, user)
 
 @bot.event
@@ -313,6 +311,20 @@ async def removepollchannel(ctx):
 
 @bot.listen('on_message')
 async def on_message(message):
+  # Grad role adding when comment in Day 30
+  thread_roles = {
+      1124391562265239595: 1127996842475536557,
+      1138512836277043210: 1138216925026078821,
+  }
+  disqualified_roles = [1093991198328365098, 1093997383995641986]
+  if message.channel.type == discord.ChannelType.public_thread:
+    if message.channel.id in thread_roles:
+      user_roles = [role.id for role in message.author.roles]
+      if not any(role in disqualified_roles for role in user_roles):
+        role_to_add = message.guild.get_role(thread_roles[message.channel.id])
+        if role_to_add:
+          await message.author.add_roles(role_to_add)
+          print(f"Assigned role {role_to_add.name} to {message.author.name}")
   if message.author != bot.user and not message.content.startswith(bot.command_prefix):
     thread_channels = pickle.load(open('thread_channels.dat', 'rb'))
     poll_channels = pickle.load(open('poll_channels.dat', 'rb'))
