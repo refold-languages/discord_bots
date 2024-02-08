@@ -15,6 +15,61 @@ intents.members = True
 bot = commands.Bot(intents=intents, command_prefix='!')
 #help_command = commands.DefaultHelpCommand(no_category = 'Commands')
 
+#----- Sub server role adding -----#
+
+MAIN_SERVER_ID = 775877387426332682
+ROLE_MAPPING = {
+  778787713012727809: '775883964266840066', # Japanese
+  667734565309382657: '780905794001698836', # Spanish
+  778788342929031188: '780905858715615262', # Korean
+  785938955823480842: '780978573514637332', # German
+  784482683282915389: '780906072457347083', # Mandarin
+  784471610270810166: '780978638421098508', # French
+  784470147930783835: '780978715920171031', # English
+  785922884446191649: '780978614409101362', # Russian
+  833885350584778804: '784613059100278834', # Portuguese
+  833879263823396864: '780979018957848596', # Italian
+  856910581088780309: '780978677495627786', # Arabic
+  789554739553632287: '784529021420568597', # Cantonese
+  1030979301362900992: '804928731025899541', # Tagalog
+}
+
+async def assign_role_to_member(member, role_id):
+  main_guild = await bot.fetch_guild(MAIN_SERVER_ID)
+  if main_guild:
+    roles = await main_guild.fetch_roles()
+    role = discord.utils.find(lambda r: r.id == int(role_id), roles)
+    if role:
+      try:
+        member_in_main_guild = await main_guild.fetch_member(member.id)
+        await member_in_main_guild.add_roles(role)
+      except discord.HTTPException:
+        pass
+
+async def remove_role_from_member(member, role_id):
+  main_guild = await bot.fetch_guild(MAIN_SERVER_ID)
+  if main_guild:
+    roles = await main_guild.fetch_roles()
+    role = discord.utils.find(lambda r: r.id == int(role_id), roles)
+    if role:
+      try:
+        member_in_main_guild = await main_guild.fetch_member(member.id)
+        await member_in_main_guild.remove_roles(role)
+      except discord.HTTPException:
+        pass
+
+@bot.event
+async def on_member_join(member):
+    if member.guild.id != MAIN_SERVER_ID and member.guild.id in ROLE_MAPPING:
+        role_id = ROLE_MAPPING[member.guild.id]
+        await assign_role_to_member(member, role_id)
+
+@bot.event
+async def on_member_remove(member):
+    if member.guild.id != MAIN_SERVER_ID and member.guild.id in ROLE_MAPPING:
+        role_id = ROLE_MAPPING[member.guild.id]
+        await remove_role_from_member(member, role_id)
+
 @bot.event
 async def on_ready():
   name = bot.user
@@ -31,15 +86,17 @@ async def ping(ctx):
 
 @bot.event
 async def on_message_delete(message):
-  if message.guild.id != 757802790532677683:
-    embed = discord.Embed(title = f'A message was deleted in {message.guild.name}', description = '', color = 0x4287f5)
-    embed.add_field(name = 'The deleted message is:', value = f'{message.content}', inline = True)
-    embed.add_field(name = 'It was sent by:', value = f'{message.author.mention}', inline = True)
+    ignored_server_ids = [757802790532677683, 778787713012727809, 778331995297808438]
+    if message.guild.id in ignored_server_ids:
+      return 
+    embed = discord.Embed(title=f'A message was deleted in {message.guild.name}', description='', color=0x4287f5)
+    embed.add_field(name='The deleted message is:', value=f'{message.content}', inline=True)
+    embed.add_field(name='It was sent by:', value=f'{message.author.mention}', inline=True)
     channel = bot.get_channel(966080907477909514)
     await channel.send('', embed=embed)
 
 def read_language_roles():
-    with open('/home/bena/Documents/DiscordBots/discord_bots/spanish_bot/language_roles.tsv', mode='r', encoding='utf-8') as file:
+    with open('language_roles.tsv', mode='r', encoding='utf-8') as file:
         reader = csv.reader(file, delimiter='\t')
         return {rows[0]: int(rows[1]) for rows in reader}
 
@@ -79,7 +136,6 @@ async def on_raw_reaction_remove(payload):
         member = await guild.fetch_member(payload.user_id)  # Fetch the member
         emoji = str(payload.emoji)
         language_roles = read_language_roles()
-        # Check if the emoji is in the TSV file
         if emoji in language_roles:
             role_id = language_roles[emoji]
             role = guild.get_role(role_id)
