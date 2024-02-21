@@ -1,6 +1,6 @@
 from ast import alias
 import discord
-from discord.ext import commands
+from discord.ext import tasks, commands
 import pickle
 import random
 import doclist
@@ -9,11 +9,13 @@ import json
 import os
 from os import path
 import csv
+import pytz
+from datetime import datetime, timedelta
+import asyncio
 
 intents = discord.Intents.all()
 intents.members = True
 bot = commands.Bot(intents=intents, command_prefix='!')
-#help_command = commands.DefaultHelpCommand(no_category = 'Commands')
 
 #----- Sub server role adding -----#
 
@@ -74,6 +76,7 @@ async def on_member_remove(member):
 async def on_ready():
   name = bot.user
   print(f'We have logged in as {name}')
+  await start_daily_thread()
 
 @bot.event
 async def on_command_error(ctx, error):
@@ -116,7 +119,7 @@ async def on_raw_reaction_add(payload):
     await msg.add_reaction('❌')
   if emoji == '❌' and user != bot.user and message.author == bot.user:
     await message.delete()
-  if payload.channel_id == 1202719368237293648 or payload.channel_id == 934209764819361902:  # Check if the reaction is in the specified channel
+  if payload.channel_id == 1202719368237293648 or payload.channel_id == 934209764819361902:
     server = await bot.fetch_guild(payload.guild_id)
     language_roles = read_language_roles()
     if emoji in language_roles:
@@ -129,16 +132,16 @@ async def on_raw_reaction_add(payload):
 
 @bot.event
 async def on_raw_reaction_remove(payload):
-    if payload.channel_id == 1202719368237293648 or payload.channel_id == 934209764819361902:  # Check if the reaction is in the specified channel
+    if payload.channel_id == 1202719368237293648 or payload.channel_id == 934209764819361902:
         guild = await bot.fetch_guild(payload.guild_id)
-        member = await guild.fetch_member(payload.user_id)  # Fetch the member
+        member = await guild.fetch_member(payload.user_id)
         emoji = str(payload.emoji)
         language_roles = read_language_roles()
         if emoji in language_roles:
             role_id = language_roles[emoji]
             role = guild.get_role(role_id)
             if role:
-                await member.remove_roles(role)  # Remove the role from the member
+                await member.remove_roles(role)
 
 def load_video_data(filename):
     videos = []
@@ -149,7 +152,6 @@ def load_video_data(filename):
             videos.append(row)
     return videos
 
-# Load the data at the start of your bot
 video_data = load_video_data('video_links.tsv')
 
 def find_video(query, video_data):
@@ -158,6 +160,46 @@ def find_video(query, video_data):
         if query in video['references']:
             return video['link']
     return "No video found for your query."
+
+def next_occurrence(hour=16, minute=00, tz='America/Los_Angeles'):
+  now = datetime.now(pytz.timezone(tz))
+  target_time = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+  if target_time <= now:
+    target_time += timedelta(days=1)
+  return target_time
+
+accountability_channel_ids = [829501009717755955]
+@tasks.loop(hours=24)
+async def create_daily_thread():
+  now = datetime.now().astimezone(pytz.timezone('America/Los_Angeles'))
+  
+  message_content = (
+    "Hello <@&1209597318043533404>! Today is <t:{}:D>. "
+    "How was your language learning today? What did you do? "
+    "Did you struggle with anything? Or did you have any particular wins today? "
+    "Post your replies in the thread below!\n\n"
+    "If today's been a tough day for your language learning, there's still time! "
+    "Go do 5 minutes of an easy activity you enjoy 😁"
+  )
+  for channel_id in accountability_channel_ids:
+    channel = bot.get_channel(channel_id)
+    if channel:
+      timestamp = int(now.timestamp())
+      formatted_message = message_content.format(timestamp)
+      message = await channel.send(formatted_message)
+      await channel.create_thread(name=f"Daily Accountability {now.strftime('%Y-%m-%d')}", message=message)
+
+  now = datetime.now(pytz.timezone('America/Los_Angeles'))
+  first_run_time = next_occurrence()
+  initial_delay = (first_run_time - now).total_seconds()
+
+async def start_daily_thread():
+  now = datetime.now(pytz.timezone('America/Los_Angeles'))
+  first_run_time = next_occurrence()
+  initial_delay = (first_run_time - now).total_seconds()
+  print(f"Waiting for {initial_delay} seconds to start the daily thread.")
+  await asyncio.sleep(initial_delay)
+  create_daily_thread.start()
 
 #----- General Response Commands -----#
 
@@ -514,7 +556,7 @@ async def endproject(ctx, name=None):
 
 @bot.command(aliases=['2L2', 'twol2', 'twoltwo', 'twoLtwo', '2l2'])
 async def twoL2(ctx):
-  await ctx.send(f'https://www.youtube.com/watch?v=PlteftANWoE')
+  await ctx.send(f'Learning two languages at the same time is totally possible, but it\'s less efficient than doing one language and then the other. This is because you will lose some time switching between the languages, you\'re more likely to get confused, etc. For more information, watch this video: https://www.youtube.com/watch?v=PlteftANWoE')
 
 @bot.command(aliases=['STAGE1', 'Stage1', 'StageOne', 'Stage_1'])
 async def stage1(ctx):
@@ -546,4 +588,5 @@ async def video(ctx, *, query: str):
 parser = argparse.ArgumentParser(description='Bot de español')
 parser.add_argument('auth_key', type=str, help='the key to authenticate this discord bot with discord')
 args = parser.parse_args()
+
 bot.run(args.auth_key)
