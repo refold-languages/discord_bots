@@ -578,6 +578,10 @@ async def avatar(ctx, target:discord.Member=None):
   else:
     await ctx.send(f'{target.avatar}')
 
+@bot.command(help='Link to the Refold store if the main site isn\'t loading', category='General Commands')
+async def store(ctx): 
+  await ctx.send('https://refold.link/store \n This is an alternate place to buy all the Refold decks. If the main site isn\'t loading, use this link instead!')
+
 #----- Video Commands -----#
 
 @bot.command(name='video')
