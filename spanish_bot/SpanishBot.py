@@ -582,6 +582,10 @@ async def avatar(ctx, target:discord.Member=None):
 async def store(ctx): 
   await ctx.send('https://refold.link/store \n This is an alternate place to buy all the Refold decks. If the main site isn\'t loading, use this link instead!')
 
+@bot.command(aliases=['homework', 'hwhelp', 'hw', 'helpwithhomework', 'homework-help'], help='Basic response to people asking for help with their homework', category='General Commands')
+async def homeworkhelp(ctx): 
+  await ctx.send('Hey! It looks like you\'re looking for help with your homework. Refold isn\'t the place to get homework help. We\'re a community of dedicated language learners and our primary focus is NOT on grammar exercises and translations.\\n\\nIf you don\'t really care about learning and just want help on your homework, DeepL + ChatGPT or another AI chatbot will be the best option. But please don\'t bother people with your homework questions. \\n\\nHowever, if you are actually interested in learning a language to a high level of fluency, we invite you to stick around! Here\'s a super short video explaining the Refold approach to language learning: https://youtu.be/GwDDirCcHos')
+
 #----- Video Commands -----#
 
 @bot.command(name='video')
