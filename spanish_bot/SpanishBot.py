@@ -160,6 +160,24 @@ def find_video(query, video_data):
         if query in video['references']:
             return video['link']
     return "No video found for your query."
+    
+def load_docs_data(filename):
+    docs = []
+    with open(filename, 'r') as file:
+        reader = csv.DictReader(file, delimiter='\t', fieldnames=['title', 'references', 'link'])
+        for row in reader:
+            row['references'] = row['references'].lower().split(', ')
+            docs.append(row)
+    return docs
+
+doc_data = load_docs_data('crowdsource_docs.tsv')
+
+def find_doc(query, doc_data):
+    query = query.lower()
+    for doc in doc_data:
+        if query in doc['references']:
+            return doc['link']
+    return "No document found for your query."
 
 def next_occurrence(hour=16, minute=00, tz='America/Los_Angeles'):
   now = datetime.now(pytz.timezone(tz))
@@ -584,7 +602,7 @@ async def store(ctx):
 
 @bot.command(aliases=['homework', 'hwhelp', 'hw', 'helpwithhomework', 'homework-help'], help='Basic response to people asking for help with their homework', category='General Commands')
 async def homeworkhelp(ctx): 
-  await ctx.send('Hey! It looks like you\'re looking for help with your homework. Refold isn\'t the place to get homework help. We\'re a community of dedicated language learners and our primary focus is NOT on grammar exercises and translations.\\n\\nIf you don\'t really care about learning and just want help on your homework, DeepL + ChatGPT or another AI chatbot will be the best option. But please don\'t bother people with your homework questions. \\n\\nHowever, if you are actually interested in learning a language to a high level of fluency, we invite you to stick around! Here\'s a super short video explaining the Refold approach to language learning: https://youtu.be/GwDDirCcHos')
+  await ctx.send('Hey! It looks like you\'re looking for help with your homework. Refold isn\'t the place to get homework help. We\'re a community of dedicated language learners and our primary focus is NOT on grammar exercises and translations.\n\nIf you don\'t really care about learning and just want help on your homework, DeepL + ChatGPT or another AI chatbot will be the best option. But please don\'t bother people with your homework questions. \n\nHowever, if you are actually interested in learning a language to a high level of fluency, we invite you to stick around! Here\'s a super short video explaining the Refold approach to language learning: https://youtu.be/GwDDirCcHos')
 
 #----- Video Commands -----#
 
@@ -592,6 +610,11 @@ async def homeworkhelp(ctx):
 async def video(ctx, *, query: str):
     video_link = find_video(query, video_data)
     await ctx.send(video_link)
+
+@bot.command(name='doc', aliases=['crowdsourcedoc', 'resourcedoc'])
+async def doc(ctx, *, query: str):
+    doc_link = find_doc(query, doc_data)
+    await ctx.send(doc_link)
 
 parser = argparse.ArgumentParser(description='Bot de español')
 parser.add_argument('auth_key', type=str, help='the key to authenticate this discord bot with discord')
