@@ -80,6 +80,8 @@ async def on_ready():
 
 @bot.event
 async def on_command_error(ctx, error):
+  if isinstance(error, commands.errors.CheckFailure):
+    await ctx.send('You do not have the right permissions to use this command.')
   print(str(error))
   await ctx.message.delete()
 
@@ -615,6 +617,41 @@ async def video(ctx, *, query: str):
 async def doc(ctx, *, query: str):
     doc_link = find_doc(query, doc_data)
     await ctx.send(doc_link)
+
+#----- Accurate Member Count -----#
+
+community_servers = {775877387426332682, 778787713012727809, 667734565309382657, 778788342929031188, 785938955823480842, 784482683282915389, 784471610270810166, 784470147930783835, 785922884446191649, 833885350584778804, 833879263823396864, 856910581088780309, 789554739553632287, 1030979301362900992}
+allowed_user_ids = {288075451463761920, 754169419881775285}
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def count_unique_users(ctx):
+  if ctx.author.id in allowed_user_ids:
+    unique_users = {}
+    await ctx.send(f"Counting users. This might take a moment.")
+    for guild in bot.guilds:
+      for member in guild.members:
+        # Check if user already exists and update guild names and earliest join date
+        if member.id in unique_users:
+          unique_users[member.id]['guild_names'].append(guild.name)
+          # Update the joined_at date if the current one is earlier
+          if member.joined_at < unique_users[member.id]['joined_at']:
+            unique_users[member.id]['joined_at'] = member.joined_at
+        else:
+          unique_users[member.id] = {
+            'name': member.name,
+            'discriminator': member.discriminator,
+            'guild_names': [guild.name],
+            'joined_at': member.joined_at 
+          }
+    with open('unique_users.tsv', 'w', encoding='utf-8') as file:
+      file.write("UUID\tName\tDiscriminator\tServer Names\tFirst Joined At\n")
+      for user_id, data in unique_users.items():
+        server_names = ", ".join(data['guild_names'])
+        first_joined_at = data['joined_at'].strftime('%Y-%m-%d %H:%M:%S')
+        file.write(f"{user_id}\t{data['name']}\t{data['discriminator']}\t{server_names}\t{first_joined_at}\n")
+    await ctx.send(f"Unique users counted: {len(unique_users)}")
+    await ctx.send(file=discord.File('unique_users.tsv'))
 
 parser = argparse.ArgumentParser(description='Bot de español')
 parser.add_argument('auth_key', type=str, help='the key to authenticate this discord bot with discord')
