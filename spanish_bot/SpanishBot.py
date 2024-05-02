@@ -620,7 +620,7 @@ async def doc(ctx, *, query: str):
 
 #----- Accurate Member Count -----#
 
-community_servers = {775877387426332682, 778787713012727809, 667734565309382657, 778788342929031188, 785938955823480842, 784482683282915389, 784471610270810166, 784470147930783835, 785922884446191649, 833885350584778804, 833879263823396864, 856910581088780309, 789554739553632287, 1030979301362900992}
+community_servers = {775877387426332682, 1093991079197560912, 778787713012727809, 667734565309382657, 778788342929031188, 785938955823480842, 784482683282915389, 784471610270810166, 784470147930783835, 785922884446191649, 833885350584778804, 833879263823396864, 856910581088780309, 789554739553632287, 1030979301362900992}
 allowed_user_ids = {288075451463761920, 754169419881775285}
 
 @bot.command()
@@ -628,22 +628,21 @@ allowed_user_ids = {288075451463761920, 754169419881775285}
 async def count_unique_users(ctx):
   if ctx.author.id in allowed_user_ids:
     unique_users = {}
-    await ctx.send(f"Counting users. This might take a moment.")
-    for guild in bot.guilds:
-      for member in guild.members:
-        # Check if user already exists and update guild names and earliest join date
-        if member.id in unique_users:
-          unique_users[member.id]['guild_names'].append(guild.name)
-          # Update the joined_at date if the current one is earlier
-          if member.joined_at < unique_users[member.id]['joined_at']:
-            unique_users[member.id]['joined_at'] = member.joined_at
-        else:
-          unique_users[member.id] = {
-            'name': member.name,
-            'discriminator': member.discriminator,
-            'guild_names': [guild.name],
-            'joined_at': member.joined_at 
-          }
+    for guild_id in community_servers:
+      guild = bot.get_guild(guild_id)
+      if guild: 
+        for member in guild.members:
+          if member.id in unique_users:
+            unique_users[member.id]['guild_names'].append(guild.name)
+            if member.joined_at < unique_users[member.id]['joined_at']:
+              unique_users[member.id]['joined_at'] = member.joined_at
+          else:
+            unique_users[member.id] = {
+              'name': member.name,
+              'discriminator': member.discriminator,
+              'guild_names': [guild.name],
+              'joined_at': member.joined_at
+            }
     with open('unique_users.tsv', 'w', encoding='utf-8') as file:
       file.write("UUID\tName\tDiscriminator\tServer Names\tFirst Joined At\n")
       for user_id, data in unique_users.items():
