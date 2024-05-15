@@ -75,7 +75,7 @@ async def on_message(message):
                          "The response of your answer should be the same as the users' question, unless the specifically ask for a response in a different language.")
             prompt = message.content
             response = openai_client.chat.completions.create(
-                model="gpt-4-0125-preview",
+                model="gpt-4o",
                 messages=[
                     {"role": "user", "content": customgpt},
                     {"role": "user", "content": prompt}
