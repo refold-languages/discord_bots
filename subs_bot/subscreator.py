@@ -226,6 +226,7 @@ async def youtube_video_to_srt_async(video_url, video_title):
 
 async def download_audio_async(video_url):
     try:
+        print(f"Starting download for {video_url}")
         ydl_opts = {
             'format': 'bestaudio/best',
             'postprocessors': [{
@@ -238,9 +239,12 @@ async def download_audio_async(video_url):
         }
         loop = asyncio.get_event_loop()
         info = await loop.run_in_executor(None, lambda: youtube_dl.YoutubeDL(ydl_opts).extract_info(video_url, download=True))
+        print("Download completed")
         filename = youtube_dl.YoutubeDL(ydl_opts).prepare_filename(info)
+        print(f"File downloaded: {filename}")
         return filename.replace('.webm', '.mp3').replace('.m4a', '.mp3')
     except Exception as e:
+        print(f"Failed to download audio: {e}")
         raise RuntimeError(f"Failed to download audio: {e}")
 
 async def transcribe_audio_with_replicate_async(audio_file):
