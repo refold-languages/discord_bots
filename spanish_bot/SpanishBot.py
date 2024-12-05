@@ -77,6 +77,7 @@ async def on_ready():
   name = bot.user
   print(f'We have logged in as {name}')
   await start_daily_thread()
+  await grads_start_daily_thread()
 
 @bot.event
 async def on_command_error(ctx, error):
@@ -181,6 +182,8 @@ def find_doc(query, doc_data):
             return doc['link']
     return "No document found for your query."
 
+#<--- Automatic Thread Pings ---> 
+
 def next_occurrence(hour=16, minute=00, tz='America/Los_Angeles'):
   now = datetime.now(pytz.timezone(tz))
   target_time = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
@@ -220,6 +223,46 @@ async def start_daily_thread():
   print(f"Waiting for {initial_delay} seconds to start the daily thread.")
   await asyncio.sleep(initial_delay)
   create_daily_thread.start()
+
+def grads_next_occurrence(hour=9, minute=00, day_of_week=4, tz='America/Los_Angeles'):
+  now = datetime.now(pytz.timezone(tz))
+  target_time = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+  days_ahead = (day_of_week - now.weekday() + 7) % 7
+  if days_ahead == 0 and target_time <= now:
+      days_ahead = 7
+  return target_time + timedelta(days=days_ahead)
+
+grads_accountability_channel_ids = [1314250635188764742]
+@tasks.loop(hours=168)
+async def grads_create_daily_thread():
+  now = datetime.now().astimezone(pytz.timezone('America/Los_Angeles'))
+  
+  message_content = (
+    "Greetings, @everyone, it's time for the weekly check-in!\n"
+    "1. What are you working on?\n"
+    "2. What are you learning?\n"
+    "3. What is your most recent win?\n\n"
+    "Share your accolades and accomplishments with the rest of the academy below!"
+  )
+  for channel_id in grads_accountability_channel_ids:
+    channel = bot.get_channel(channel_id)
+    if channel:
+      timestamp = int(now.timestamp())
+      formatted_message = message_content.format(timestamp)
+      message = await channel.send(formatted_message)
+      await channel.create_thread(name=f"Weekly Check-in - {now.strftime('%Y-%m-%d')}", message=message)
+
+  now = datetime.now(pytz.timezone('America/Los_Angeles'))
+  first_run_time = grads_next_occurrence()
+  initial_delay = (first_run_time - now).total_seconds()
+
+async def grads_start_daily_thread():
+  now = datetime.now(pytz.timezone('America/Los_Angeles'))
+  first_run_time = grads_next_occurrence()
+  initial_delay = (first_run_time - now).total_seconds()
+  print(f"Waiting for {initial_delay} seconds to start the weekl thread.")
+  await asyncio.sleep(initial_delay)
+  grads_create_daily_thread.start()
 
 #----- General Response Commands -----#
 
