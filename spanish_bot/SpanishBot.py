@@ -108,30 +108,40 @@ def read_language_roles():
 
 @bot.event
 async def on_raw_reaction_add(payload):
-  user = await bot.fetch_user(payload.user_id)
-  guild = await bot.fetch_guild(payload.guild_id)
-  member = await guild.fetch_member(payload.user_id)
-  channel = await bot.fetch_channel(payload.channel_id)
-  message = await channel.fetch_message(payload.message_id)
-  emoji = str(payload.emoji)
-  if emoji == '🔖':
-    server = await bot.fetch_guild(payload.guild_id)
-    embed = discord.Embed(title = f'You made a bookmark!', description='', color=0xc91f16)
-    embed.add_field(name = 'The message said:', value = f'{message.content}', inline = True)
-    msg = await user.send(f'Click to view original message: https://discord.com/channels/{server.id}/{channel.id}/{message.id}', embed=embed)
-    await msg.add_reaction('❌')
-  if emoji == '❌' and user != bot.user and message.author == bot.user:
-    await message.delete()
-  if payload.channel_id == 1202719368237293648 or payload.channel_id == 934209764819361902:
-    server = await bot.fetch_guild(payload.guild_id)
-    language_roles = read_language_roles()
-    if emoji in language_roles:
-      role_id = language_roles[emoji]
-      role = server.get_role(role_id)
-      if role:
-        await member.add_roles(role)
-    else:
-      await message.remove_reaction(emoji, user)
+    if payload.user_id == bot.user.id:
+        return  # Ignore bot's own reactions
+
+    user = await bot.fetch_user(payload.user_id)
+    channel = await bot.fetch_channel(payload.channel_id)
+    message = await channel.fetch_message(payload.message_id)
+    emoji = str(payload.emoji)
+
+    # Delete bot's own DM message if ❌ is added
+    if emoji == '❌' and isinstance(channel, discord.DMChannel) and message.author == bot.user:
+        await message.delete()
+        return
+
+    # Bookmark reaction
+    if emoji == '🔖':
+        guild = await bot.fetch_guild(payload.guild_id)
+        embed = discord.Embed(title='You made a bookmark!', description='', color=0xc91f16)
+        embed.add_field(name='The message said:', value=f'{message.content}', inline=True)
+        msg = await user.send(f'Click to view original message: https://discord.com/channels/{guild.id}/{channel.id}/{message.id}', embed=embed)
+        await msg.add_reaction('❌')
+
+    # Role reaction section
+    if payload.guild_id and (payload.channel_id == 1202719368237293648 or payload.channel_id == 934209764819361902):
+        guild = await bot.fetch_guild(payload.guild_id)
+        member = await guild.fetch_member(payload.user_id)
+        language_roles = read_language_roles()
+        if emoji in language_roles:
+            role_id = language_roles[emoji]
+            role = guild.get_role(role_id)
+            if role:
+                await member.add_roles(role)
+        else:
+            await message.remove_reaction(emoji, user)
+
 
 @bot.event
 async def on_raw_reaction_remove(payload):
@@ -320,6 +330,36 @@ async def faq2(ctx):
 @bot.command(help='Responds to frequently asked questions.', category='General Commands')
 async def faqs(ctx):
   await ctx.send(f'**FAQ#1**:  Can you make a channel/category/server for my target language?\n\nChannels: Upon request, any language can get a role and a channel. Ask in server-feedback and we\'ll add it. New channels are added once per week in bulk.\n\nCategories: When a community grows, they can request a category, multiple channels, and a google doc for resources.\n\nServers: When a community has a dedicated admin and 25 active members, they can request a dedicated server.\n\n**FAQ#2**: Is there a server for X language?\nThere are currently servers for Japanese, Spanish, English, Korean, Russian, French, German, Mandarin, Cantonese, Portuguese, Italian, Arabic')
+
+@bot.command(help='Toggle your Spanish Book Club role. Requires membership in the Spanish server.', category='General Commands')
+async def spanishbookclub(ctx):
+    target_guild_id = 667734565309382657
+    role_id = 1346227790017593376
+
+    target_guild = bot.get_guild(target_guild_id)
+    if not target_guild:
+        await ctx.send("An error occurred. Please try again later.")
+        return
+
+    member = target_guild.get_member(ctx.author.id)
+    if not member:
+        await ctx.send("You must join the Spanish server to use this command.")
+        return
+
+    role = target_guild.get_role(role_id)
+    if not role:
+        await ctx.send("An error occurred. The role does not exist.")
+        return
+
+    try:
+        if role in member.roles:
+            await member.remove_roles(role)
+            await ctx.send("The Spanish Book Club role has been removed.")
+        else:
+            await member.add_roles(role)
+            await ctx.send("The Spanish Book Club role has been added.")
+    except discord.HTTPException as e:
+        await ctx.send(f"Failed to update your role: {e}")
 
 #----- Auto Thread Channels -----#
 
