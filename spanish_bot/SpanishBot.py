@@ -130,7 +130,7 @@ async def on_raw_reaction_add(payload):
         await msg.add_reaction('❌')
 
     # Role reaction section
-    if payload.guild_id and (payload.channel_id == 1202719368237293648 or payload.channel_id == 934209764819361902):
+    if payload.guild_id and (payload.channel_id == 1202719368237293648 or payload.channel_id == 934209764819361902 or payload.channel_id == 1300934590004985969):
         guild = await bot.fetch_guild(payload.guild_id)
         member = await guild.fetch_member(payload.user_id)
         language_roles = read_language_roles()
@@ -145,7 +145,7 @@ async def on_raw_reaction_add(payload):
 
 @bot.event
 async def on_raw_reaction_remove(payload):
-    if payload.channel_id == 1202719368237293648 or payload.channel_id == 934209764819361902:
+    if payload.channel_id == 1202719368237293648 or payload.channel_id == 934209764819361902 or payload.channel_id == 1300934590004985969:
         guild = await bot.fetch_guild(payload.guild_id)
         member = await guild.fetch_member(payload.user_id)
         emoji = str(payload.emoji)
