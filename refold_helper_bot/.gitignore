@@ -1,0 +1,81 @@
+thread_channels.dat
+projects.json
+thread_channels_backup_*.dat
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Bot-specific
+# Logs (keep directory structure, ignore contents)
+logs/*.log
+logs/*.log.*
+
+# Runtime data (keep directory structure, ignore contents)
+data/*.json
+data/backups/*
+
+# Secrets and config
+.env
+*.key
+token.txt
+auth_key.txt
+
+# Output files from commands
+unique_users.tsv
+*.tsv.backup_*
+*.tsv.archived_*
+*.dat.backup_*
+*.dat.archived_*
+
+# Migration leftovers
+*.dat
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
