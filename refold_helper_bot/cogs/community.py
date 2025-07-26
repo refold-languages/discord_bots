@@ -3,13 +3,12 @@ Community cog for Refold Helper Bot.
 Handles projects, automated threads, accountability features, and community management with comprehensive logging and monitoring.
 """
 
-import asyncio
 import time
 from datetime import datetime
 
 import discord
 import pytz
-from discord.ext import commands, tasks
+from discord.ext import commands
 
 from services import ProjectService, ThreadService
 from config.settings import settings
@@ -17,52 +16,6 @@ from utils import (
     get_logger, performance_monitor, handle_error,
     DiscordError, ValidationError, safe_execute
 )
-
-
-def track_command_performance(func):
-    """Decorator to track command performance and add comprehensive logging."""
-    async def wrapper(self, ctx, *args, **kwargs):
-        start_time = time.perf_counter()
-        command_name = ctx.command.name if ctx.command else func.__name__
-        
-        # Log command start
-        self.logger.command_start(
-            command_name,
-            ctx.author.id,
-            ctx.guild.id if ctx.guild else None,
-            channel_id=ctx.channel.id
-        )
-        
-        try:
-            async with performance_monitor.track(f"command_{command_name}", 
-                                                user_id=ctx.author.id,
-                                                guild_id=ctx.guild.id if ctx.guild else None):
-                result = await func(self, ctx, *args, **kwargs)
-                
-                # Log successful completion
-                duration_ms = (time.perf_counter() - start_time) * 1000
-                self.logger.command_success(command_name, duration_ms)
-                
-                # Check for slow commands
-                if duration_ms > settings.SLOW_COMMAND_THRESHOLD_MS:
-                    self.logger.warning("slow_command_detected",
-                                      command_name=command_name,
-                                      duration_ms=duration_ms,
-                                      threshold_ms=settings.SLOW_COMMAND_THRESHOLD_MS,
-                                      user_id=ctx.author.id)
-                
-                return result
-                
-        except Exception as e:
-            # Log command error
-            duration_ms = (time.perf_counter() - start_time) * 1000
-            self.logger.command_error(command_name, str(e), duration_ms)
-            
-            # Let error handler deal with it
-            await handle_error(ctx, e)
-            
-    return wrapper
-
 
 class Community(commands.Cog):
     """Community management features with comprehensive monitoring and error handling."""
@@ -74,17 +27,13 @@ class Community(commands.Cog):
         self.thread_service = ThreadService()
 
     async def cog_load(self):
-        """Initialize services and start automated tasks when cog loads (non-blocking)."""
+        """Initialize services when cog loads."""
         self.logger.info("community_cog_loading")
         
         try:
             # Initialize services
             self.project_service.initialize()
             self.thread_service.initialize()
-            
-            # Schedule tasks to start, but don't block cog loading
-            asyncio.create_task(self._schedule_daily_thread())
-            asyncio.create_task(self._schedule_grads_thread())
             
             self.logger.info("community_cog_loaded_successfully")
             
@@ -95,162 +44,13 @@ class Community(commands.Cog):
             raise
 
     def cog_unload(self):
-        """Clean up tasks when cog unloads."""
+        """Clean up when cog unloads."""
         self.logger.info("community_cog_unloading")
-        
-        if hasattr(self, 'create_daily_thread') and self.create_daily_thread.is_running():
-            self.create_daily_thread.cancel()
-            self.logger.info("daily_thread_task_cancelled")
-            
-        if hasattr(self, 'grads_create_daily_thread') and self.grads_create_daily_thread.is_running():
-            self.grads_create_daily_thread.cancel()
-            self.logger.info("grads_thread_task_cancelled")
-        
         self.logger.info("community_cog_unloaded")
 
-    # Automated thread scheduling
-    async def _schedule_daily_thread(self):
-        """Schedule daily thread task (non-blocking)."""
-        await self.bot.wait_until_ready()
-        
-        try:
-            now = datetime.now(pytz.timezone(settings.TIMEZONE))
-            first_run_time = self.thread_service.calculate_next_daily_occurrence()
-            initial_delay = (first_run_time - now).total_seconds()
-            
-            self.logger.info("daily_thread_scheduled",
-                           next_run_time=first_run_time.isoformat(),
-                           initial_delay_seconds=initial_delay)
-            
-            await asyncio.sleep(initial_delay)
-            self.create_daily_thread.start()
-            
-        except Exception as e:
-            self.logger.error("daily_thread_scheduling_failed",
-                            error=str(e),
-                            error_type=type(e).__name__)
-
-    async def _schedule_grads_thread(self):
-        """Schedule weekly graduate thread task (non-blocking)."""
-        await self.bot.wait_until_ready()
-        
-        try:
-            now = datetime.now(pytz.timezone(settings.TIMEZONE))
-            first_run_time = self.thread_service.calculate_next_weekly_occurrence()
-            initial_delay = (first_run_time - now).total_seconds()
-            
-            self.logger.info("grads_thread_scheduled",
-                           next_run_time=first_run_time.isoformat(),
-                           initial_delay_seconds=initial_delay)
-            
-            await asyncio.sleep(initial_delay)
-            self.grads_create_daily_thread.start()
-            
-        except Exception as e:
-            self.logger.error("grads_thread_scheduling_failed",
-                            error=str(e),
-                            error_type=type(e).__name__)
-
-    @tasks.loop(hours=24)
-    async def create_daily_thread(self):
-        """Create daily accountability threads."""
-        try:
-            async with performance_monitor.track("create_daily_accountability_thread"):
-                now = datetime.now().astimezone(pytz.timezone(settings.TIMEZONE))
-                timestamp = int(now.timestamp())
-                
-                # Generate message using service
-                message_data = self.thread_service.generate_daily_accountability_message(timestamp)
-                
-                # Send to all accountability channels
-                channels_processed = 0
-                channels_failed = 0
-                
-                for channel_id in self.thread_service.get_accountability_channels():
-                    try:
-                        channel = self.bot.get_channel(channel_id)
-                        if channel:
-                            message = await channel.send(message_data.content)
-                            await channel.create_thread(name=message_data.thread_name, message=message)
-                            channels_processed += 1
-                            
-                            self.logger.info("daily_thread_created",
-                                           channel_id=channel_id,
-                                           thread_name=message_data.thread_name)
-                        else:
-                            self.logger.warning("daily_thread_channel_not_found",
-                                              channel_id=channel_id)
-                            channels_failed += 1
-                            
-                    except discord.DiscordException as e:
-                        self.logger.error("daily_thread_creation_failed",
-                                        channel_id=channel_id,
-                                        error=str(e),
-                                        error_type=type(e).__name__)
-                        channels_failed += 1
-                
-                self.logger.info("daily_thread_creation_completed",
-                               channels_processed=channels_processed,
-                               channels_failed=channels_failed,
-                               timestamp=timestamp)
-                
-        except Exception as e:
-            self.logger.error("daily_thread_task_failed",
-                            error=str(e),
-                            error_type=type(e).__name__)
-
-    @tasks.loop(hours=168)  # Weekly
-    async def grads_create_daily_thread(self):
-        """Create weekly graduate check-in threads."""
-        try:
-            async with performance_monitor.track("create_weekly_graduate_thread"):
-                now = datetime.now().astimezone(pytz.timezone(settings.TIMEZONE))
-                timestamp = int(now.timestamp())
-                
-                # Generate message using service
-                message_data = self.thread_service.generate_weekly_graduate_message(timestamp)
-                
-                # Send to all graduate channels
-                channels_processed = 0
-                channels_failed = 0
-                
-                for channel_id in self.thread_service.get_graduate_channels():
-                    try:
-                        channel = self.bot.get_channel(channel_id)
-                        if channel:
-                            message = await channel.send(message_data.content)
-                            await channel.create_thread(name=message_data.thread_name, message=message)
-                            channels_processed += 1
-                            
-                            self.logger.info("graduate_thread_created",
-                                           channel_id=channel_id,
-                                           thread_name=message_data.thread_name)
-                        else:
-                            self.logger.warning("graduate_thread_channel_not_found",
-                                              channel_id=channel_id)
-                            channels_failed += 1
-                            
-                    except discord.DiscordException as e:
-                        self.logger.error("graduate_thread_creation_failed",
-                                        channel_id=channel_id,
-                                        error=str(e),
-                                        error_type=type(e).__name__)
-                        channels_failed += 1
-                
-                self.logger.info("graduate_thread_creation_completed",
-                               channels_processed=channels_processed,
-                               channels_failed=channels_failed,
-                               timestamp=timestamp)
-                
-        except Exception as e:
-            self.logger.error("graduate_thread_task_failed",
-                            error=str(e),
-                            error_type=type(e).__name__)
-
     # Thread channel management
-    @commands.command(hidden=True)
+    @commands.command()
     @commands.has_permissions(manage_channels=True)
-    @track_command_performance
     async def setthreadchannel(self, ctx):
         """Set current channel as auto-thread channel."""
         try:
@@ -263,9 +63,8 @@ class Community(commands.Cog):
         except Exception as e:
             raise DiscordError("Failed to set thread channel", discord_error=e)
 
-    @commands.command(hidden=True)
+    @commands.command()
     @commands.has_permissions(manage_channels=True)
-    @track_command_performance
     async def addthreadchannel(self, ctx, channel_id: str):
         """Add specified channel as auto-thread channel."""
         try:
@@ -283,9 +82,8 @@ class Community(commands.Cog):
         except Exception as e:
             raise DiscordError("Failed to add thread channel", discord_error=e)
 
-    @commands.command(hidden=True)
+    @commands.command()
     @commands.has_permissions(manage_channels=True)
-    @track_command_performance
     async def removethreadchannel(self, ctx):
         """Remove current channel from auto-thread list."""
         try:
@@ -298,9 +96,8 @@ class Community(commands.Cog):
         except Exception as e:
             raise DiscordError("Failed to remove thread channel", discord_error=e)
 
-    @commands.command(hidden=True)
+    @commands.command()
     @commands.has_permissions(manage_channels=True)
-    @track_command_performance
     async def clearthreadchannels(self, ctx):
         """Clear all auto-thread channels."""
         try:
@@ -313,10 +110,53 @@ class Community(commands.Cog):
         except Exception as e:
             raise DiscordError("Failed to clear thread channels", discord_error=e)
 
-    # Poll channel management
-    @commands.command(hidden=True)
+    @commands.command()
     @commands.has_permissions(manage_channels=True)
-    @track_command_performance
+    async def listthreadchannels(self, ctx):
+        """List all auto-thread channels."""
+        try:
+            channels = self.thread_service.get_thread_channels()
+            if not channels:
+                await ctx.send("📋 No auto-thread channels configured.")
+                return
+            
+            channel_list = []
+            for channel_id in channels:
+                channel = self.bot.get_channel(channel_id)
+                if channel:
+                    channel_list.append(f"• {channel.name} ({channel_id})")
+                else:
+                    channel_list.append(f"• Unknown Channel ({channel_id})")
+            
+            embed = discord.Embed(title='Auto-Thread Channels', color=0x8566FF)
+            embed.description = '\n'.join(channel_list)
+            await ctx.send(embed=embed)
+            
+        except Exception as e:
+            raise DiscordError("Failed to list thread channels", discord_error=e)
+
+    @commands.command()
+    async def debugcommunity(self, ctx):
+        """Debug command to test if community cog is loaded."""
+        await ctx.send("✅ Community cog is loaded and working!")
+        
+        # Test the data manager
+        try:
+            channels = self.thread_service.get_thread_channels()
+            await ctx.send(f"📊 Thread channels: {len(channels)} configured")
+        except Exception as e:
+            await ctx.send(f"❌ Thread service error: {e}")
+        
+        # Test services
+        try:
+            summary = self.thread_service.get_channel_configuration_summary()
+            await ctx.send(f"📋 Channel config: {summary}")
+        except Exception as e:
+            await ctx.send(f"❌ Config summary error: {e}")
+
+    # Poll channel management
+    @commands.command()
+    @commands.has_permissions(manage_channels=True)
     async def setpollchannel(self, ctx):
         """Set current channel as auto-poll channel."""
         try:
@@ -329,9 +169,8 @@ class Community(commands.Cog):
         except Exception as e:
             raise DiscordError("Failed to set poll channel", discord_error=e)
 
-    @commands.command(hidden=True)
+    @commands.command()
     @commands.has_permissions(manage_channels=True)
-    @track_command_performance
     async def removepollchannel(self, ctx):
         """Remove current channel from auto-poll list."""
         try:
@@ -388,8 +227,7 @@ class Community(commands.Cog):
                             error_type=type(e).__name__)
 
     # Project management system
-    @commands.command(hidden=True)
-    @track_command_performance
+    @commands.command()
     async def listprojects(self, ctx):
         """List all active projects."""
         try:
@@ -414,9 +252,8 @@ class Community(commands.Cog):
         except Exception as e:
             raise DiscordError("Failed to list projects", discord_error=e)
 
-    @commands.command(hidden=True)
+    @commands.command()
     @commands.has_permissions(manage_channels=True)
-    @track_command_performance
     async def createproject(self, ctx, name: str = None, leader: str = None, *, description: str = None):
         """Create a new community project with private channel."""
         if not name or not leader or not description:
@@ -472,7 +309,6 @@ class Community(commands.Cog):
             raise DiscordError(f"Failed to create Discord channel: {str(e)}", discord_error=e)
 
     @commands.command()
-    @track_command_performance
     async def joinproject(self, ctx, *, name: str = None):
         """Join an existing community project."""
         if not name:

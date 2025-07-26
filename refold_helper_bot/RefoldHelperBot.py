@@ -6,6 +6,7 @@ A comprehensive Discord bot for the Refold language learning community.
 import asyncio
 import signal
 import sys
+import traceback
 from datetime import datetime
 
 import discord
@@ -132,23 +133,55 @@ class RefoldHelperBot(commands.Bot):
         successful_cogs = 0
         failed_cogs = []
         
-        for cog in COGS:
+        for i, cog in enumerate(COGS):
+            print(f"\n=== LOADING COG {i+1}/{len(COGS)}: {cog} ===")
+            self.logger.info("attempting_to_load_cog", 
+                           cog_name=cog, 
+                           cog_index=i,
+                           total_cogs=len(COGS))
             try:
                 async with performance_monitor.track("cog_loading", cog_name=cog):
                     await self.load_extension(cog)
                     successful_cogs += 1
+                    print(f"✅ SUCCESS: {cog} loaded")
                     self.logger.info("cog_loaded_successfully", cog_name=cog)
+                    
+                    # Log current state after each cog
+                    current_cogs = list(self.cogs.keys())
+                    print(f"📊 Current loaded cogs: {current_cogs}")
+                    self.logger.info("current_loaded_cogs", 
+                                   cog_names=current_cogs,
+                                   count=len(current_cogs))
+                    
             except Exception as e:
                 failed_cogs.append(cog)
+                print(f"❌ FAILED: {cog} - {e}")
+                print(f"🔍 FULL TRACEBACK:")
+                traceback.print_exc()
+                print("=" * 80)
+                
                 self.logger.error("cog_load_failed", 
                                 cog_name=cog, 
                                 error=str(e),
                                 error_type=type(e).__name__)
+                # Log full traceback for debugging
+                self.logger.error("cog_load_traceback", 
+                                cog_name=cog,
+                                traceback=traceback.format_exc())
+        
+        # Final state check
+        final_cogs = list(self.cogs.keys())
+        print(f"\n🏁 FINAL RESULT:")
+        print(f"✅ Successful: {successful_cogs}")
+        print(f"❌ Failed: {len(failed_cogs)} - {failed_cogs}")
+        print(f"📊 Final loaded cogs: {final_cogs}")
         
         self.logger.info("cog_loading_completed",
                         successful_cogs=successful_cogs,
                         failed_cogs=len(failed_cogs),
-                        failed_cog_names=failed_cogs)
+                        failed_cog_names=failed_cogs,
+                        final_loaded_cogs=final_cogs,
+                        final_cog_count=len(final_cogs))
         
         # Start health monitoring if enabled
         if settings.HEALTH_CHECKS_ENABLED:
@@ -159,11 +192,15 @@ class RefoldHelperBot(commands.Bot):
         """Called when bot is ready and logged in."""
         startup_duration = (datetime.utcnow() - self.start_time).total_seconds()
         
+        # Log cog state when ready
+        ready_cogs = list(self.cogs.keys())
         self.logger.info("bot_ready",
                         bot_name=str(self.user),
                         bot_id=self.user.id,
                         guild_count=len(self.guilds),
-                        startup_duration_seconds=startup_duration)
+                        startup_duration_seconds=startup_duration,
+                        ready_cogs=ready_cogs,
+                        ready_cog_count=len(ready_cogs))
         
         # Send startup alert if enabled
         if settings.ALERTS_ENABLED:
@@ -176,6 +213,7 @@ class RefoldHelperBot(commands.Bot):
         print(f'Bot ID: {self.user.id}')
         print(f'Guilds: {len(self.guilds)}')
         print(f'Startup time: {startup_duration:.2f}s')
+        print(f'Loaded cogs: {len(ready_cogs)} - {ready_cogs}')
         print('------')
 
     async def on_command(self, ctx):
