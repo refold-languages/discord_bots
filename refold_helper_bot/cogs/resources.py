@@ -101,12 +101,6 @@ class Resources(commands.Cog):
         """Explanation of shadowing technique."""
         await ctx.send('The point of this exercise is to practice imitating full native speed to get used to the sounds, rhythm and mannerisms of your language parent (the one you want to most speak like). You can find the article here, <https://refold.la/roadmap/stage-3/b/pronunciation-training>')
 
-    @commands.command(aliases=['homework', 'hwhelp', 'hw', 'helpwithhomework', 'homework-help'], 
-                     help='Basic response to people asking for help with their homework', category='General Commands')
-    async def homeworkhelp(self, ctx): 
-        """Response for homework help requests."""
-        await ctx.send('Hey! It looks like you\'re looking for help with your homework. Refold isn\'t the place to get homework help. We\'re a community of dedicated language learners and our primary focus is NOT on grammar exercises and translations.\n\nIf you don\'t really care about learning and just want help on your homework, DeepL + ChatGPT or another AI chatbot will be the best option. But please don\'t bother people with your homework questions. \n\nHowever, if you are actually interested in learning a language to a high level of fluency, we invite you to stick around! Here\'s a super short video explaining the Refold approach to language learning: https://youtu.be/GwDDirCcHos')
-
     # Utility commands
     @commands.command()
     @commands.has_permissions(manage_channels=True)

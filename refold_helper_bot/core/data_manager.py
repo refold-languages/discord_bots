@@ -10,8 +10,7 @@ from datetime import datetime
 from os import path, makedirs
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from .schemas import DataSchema, ThreadChannelsSchema, PollChannelsSchema, ProjectsSchema
-
+from .schemas import DataSchema, ThreadChannelsSchema, PollChannelsSchema, ProjectsSchema, CourseConfigSchema, HomeworkAssignmentsSchema
 
 class DataManager:
     """Unified data manager with schema validation and backup capabilities."""
@@ -29,6 +28,8 @@ class DataManager:
             "thread_channels": ThreadChannelsSchema(),
             "poll_channels": PollChannelsSchema(), 
             "projects": ProjectsSchema(),
+            "course_config": CourseConfigSchema(),
+            "homework_assignments": HomeworkAssignmentsSchema(),
         }
     
     def _get_json_path(self, data_type: str) -> str:

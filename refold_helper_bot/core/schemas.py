@@ -182,3 +182,100 @@ class ProjectsSchema(DataSchema):
         if isinstance(legacy_data, dict):
             return legacy_data
         return self.get_default()
+
+
+class CourseConfigSchema(DataSchema):
+    """Schema for course configuration data."""
+    
+    def validate(self, data: Any) -> Tuple[bool, str]:
+        if not isinstance(data, dict):
+            return False, "Data must be a dictionary"
+        
+        required_fields = ["version", "courses", "last_updated"]
+        for field in required_fields:
+            if field not in data:
+                return False, f"Missing required field: {field}"
+        
+        # Validate each course
+        for course_name, course_data in data.get("courses", {}).items():
+            if not isinstance(course_data, dict):
+                return False, f"Course {course_name} data must be a dictionary"
+            
+            required_course_fields = ["role_id", "category_id"]
+            for field in required_course_fields:
+                if field not in course_data:
+                    return False, f"Course {course_name} missing field: {field}"
+                
+                if not isinstance(course_data[field], int):
+                    return False, f"Course {course_name} field {field} must be an integer"
+        
+        return True, ""
+    
+    def get_default(self) -> Dict[str, Any]:
+        return {
+            "version": "1.0",
+            "courses": {},
+            "last_updated": datetime.now().isoformat(),
+            "metadata": {
+                "description": "Course configuration for Refold Course Server",
+                "allowed_servers": [1093991079197560912, 778331995297808438],
+                "total_courses": 0
+            }
+        }
+    
+    def migrate_from_legacy(self, legacy_data: Any) -> Dict[str, Any]:
+        # No legacy migration needed for new feature
+        return self.get_default()
+    
+class HomeworkAssignmentsSchema(DataSchema):
+    """Schema for homework assignments data."""
+    
+    def validate(self, data: Any) -> Tuple[bool, str]:
+        """Validate homework assignments data."""
+        if not isinstance(data, dict):
+            return False, "Data must be a dictionary"
+        
+        required_fields = ["version", "assignments", "last_updated"]
+        for field in required_fields:
+            if field not in data:
+                return False, f"Missing required field: {field}"
+        
+        if not isinstance(data["version"], str):
+            return False, "Version must be a string"
+        
+        if not isinstance(data["assignments"], dict):
+            return False, "Assignments must be a dictionary"
+        
+        if not isinstance(data["last_updated"], str):
+            return False, "Last_updated must be a string"
+        
+        # Validate each assignment
+        for assignment_id, assignment_data in data["assignments"].items():
+            if not isinstance(assignment_data, dict):
+                return False, f"Assignment {assignment_id} data must be a dictionary"
+            
+            required_assignment_fields = [
+                "homework_id", "course_name", "title", "content", 
+                "scheduled_datetime", "course_day", "status"
+            ]
+            for field in required_assignment_fields:
+                if field not in assignment_data:
+                    return False, f"Assignment {assignment_id} missing field: {field}"
+        
+        return True, ""
+    
+    def get_default(self) -> Dict[str, Any]:
+        """Get default homework assignments structure."""
+        return {
+            "version": "1.0",
+            "assignments": {},
+            "last_updated": datetime.now().isoformat(),
+            "metadata": {
+                "description": "Homework assignment scheduling data",
+                "total_assignments": 0
+            }
+        }
+    
+    def migrate_from_legacy(self, legacy_data: Any) -> Dict[str, Any]:
+        """No legacy migration needed for new feature."""
+        return self.get_default()

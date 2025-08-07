@@ -21,7 +21,8 @@ class BotError(Exception):
         self.message = message
         self.user_message = user_message or "Something went wrong. Please try again."
         self.recoverable = recoverable
-        self.context = context
+        # Filter out any user_message from context to avoid conflicts
+        self.context = {k: v for k, v in context.items() if k != 'user_message'}
         self.timestamp = datetime.utcnow()
     
     def to_dict(self) -> Dict[str, Any]:
@@ -41,7 +42,9 @@ class ValidationError(BotError):
     
     def __init__(self, message: str, field: str = None, value: Any = None, **context):
         user_msg = f"Invalid input provided. Please check your {field or 'data'} and try again."
-        super().__init__(message, user_msg, recoverable=True, field=field, value=value, **context)
+        # Remove user_message from context to avoid conflicts
+        clean_context = {k: v for k, v in context.items() if k != 'user_message'}
+        super().__init__(message, user_message=user_msg, recoverable=True, field=field, value=value, **clean_context)
 
 
 class DataError(BotError):
@@ -49,7 +52,9 @@ class DataError(BotError):
     
     def __init__(self, message: str, operation: str = None, data_type: str = None, **context):
         user_msg = "There was a problem accessing the data. Please try again in a moment."
-        super().__init__(message, user_msg, recoverable=True, operation=operation, data_type=data_type, **context)
+        # Remove user_message from context to avoid conflicts
+        clean_context = {k: v for k, v in context.items() if k != 'user_message'}
+        super().__init__(message, user_message=user_msg, recoverable=True, operation=operation, data_type=data_type, **clean_context)
 
 
 class DiscordError(BotError):
@@ -60,7 +65,9 @@ class DiscordError(BotError):
         user_msg = self._get_user_message(discord_error)
         recoverable = self._is_recoverable(discord_error)
         
-        super().__init__(message, user_msg, recoverable, discord_error=str(discord_error), **context)
+        # Remove user_message from context to avoid conflicts
+        clean_context = {k: v for k, v in context.items() if k != 'user_message'}
+        super().__init__(message, user_message=user_msg, recoverable=recoverable, discord_error=str(discord_error), **clean_context)
         self.discord_error = discord_error
     
     def _get_user_message(self, discord_error: Optional[discord.DiscordException]) -> str:
@@ -92,7 +99,9 @@ class ServiceError(BotError):
     
     def __init__(self, message: str, service_name: str = None, operation: str = None, **context):
         user_msg = f"The {service_name or 'service'} is temporarily unavailable. Please try again later."
-        super().__init__(message, user_msg, recoverable=True, service_name=service_name, operation=operation, **context)
+        # Remove user_message from context to avoid conflicts
+        clean_context = {k: v for k, v in context.items() if k != 'user_message'}
+        super().__init__(message, user_message=user_msg, recoverable=True, service_name=service_name, operation=operation, **clean_context)
 
 
 class ConfigurationError(BotError):
@@ -100,7 +109,9 @@ class ConfigurationError(BotError):
     
     def __init__(self, message: str, config_key: str = None, **context):
         user_msg = "The bot configuration is invalid. Please contact an administrator."
-        super().__init__(message, user_msg, recoverable=False, config_key=config_key, **context)
+        # Remove user_message from context to avoid conflicts
+        clean_context = {k: v for k, v in context.items() if k != 'user_message'}
+        super().__init__(message, user_message=user_msg, recoverable=False, config_key=config_key, **clean_context)
 
 
 class RateLimitError(BotError):
@@ -108,7 +119,9 @@ class RateLimitError(BotError):
     
     def __init__(self, message: str, retry_after: float = None, **context):
         user_msg = f"Please slow down! Try again in {retry_after or 60} seconds."
-        super().__init__(message, user_msg, recoverable=True, retry_after=retry_after, **context)
+        # Remove user_message from context to avoid conflicts
+        clean_context = {k: v for k, v in context.items() if k != 'user_message'}
+        super().__init__(message, user_message=user_msg, recoverable=True, retry_after=retry_after, **clean_context)
 
 
 class ErrorHandler:

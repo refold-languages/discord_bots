@@ -8,6 +8,8 @@ from .role_service import RoleService
 from .project_service import ProjectService, ProjectData
 from .thread_service import ThreadService, ThreadMessageData
 from .migration_service import MigrationService, MigrationReport
+from .course_service import CourseService, StudentRecord, CourseConfig
+from .homework_service import HomeworkService, HomeworkAssignment
 
 __all__ = [
     'BaseService',
@@ -18,4 +20,9 @@ __all__ = [
     'ThreadMessageData',
     'MigrationService',
     'MigrationReport',
+    'CourseService',
+    'StudentRecord',
+    'CourseConfig',
+    'HomeworkService',
+    'HomeworkAssignment',
 ]

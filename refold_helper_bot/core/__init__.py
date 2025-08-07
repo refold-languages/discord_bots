@@ -11,4 +11,5 @@ __all__ = [
     'ThreadChannelsSchema',
     'PollChannelsSchema', 
     'DataSchema',
+    'CourseConfigSchema',
 ]

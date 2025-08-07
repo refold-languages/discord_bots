@@ -28,6 +28,77 @@ class Admin(commands.Cog):
 
     @commands.command()
     @commands.has_permissions(administrator=True)
+    async def reload(self, ctx, *, cog_name: str = None):
+        """Reload a cog. Use 'all' to reload all cogs."""
+        if ctx.author.id not in ALLOWED_ADMIN_USER_IDS:
+            await ctx.send("You don't have permission to use this command.")
+            return
+        
+        if cog_name == "all":
+            # Reload all cogs
+            from cogs import COGS
+            reloaded = []
+            failed = []
+            
+            for cog in COGS:
+                try:
+                    await self.bot.reload_extension(cog)
+                    reloaded.append(cog)
+                except Exception as e:
+                    failed.append(f"{cog}: {str(e)}")
+            
+            embed = discord.Embed(title="Reload All Results", color=0x00ff00 if not failed else 0xff9900)
+            if reloaded:
+                embed.add_field(name="✅ Reloaded", value="\n".join(reloaded), inline=False)
+            if failed:
+                embed.add_field(name="❌ Failed", value="\n".join(failed), inline=False)
+            
+            await ctx.send(embed=embed)
+        
+        elif cog_name:
+            # Reload specific cog
+            try:
+                await self.bot.reload_extension(f"cogs.{cog_name}")
+                await ctx.send(f"✅ Reloaded `cogs.{cog_name}`")
+            except Exception as e:
+                await ctx.send(f"❌ Failed to reload `cogs.{cog_name}`: {str(e)}")
+        
+        else:
+            # Show available cogs
+            from cogs import COGS
+            cog_list = [cog.split('.')[-1] for cog in COGS]
+            await ctx.send(f"Usage: `!reload <cog_name>` or `!reload all`\nAvailable cogs: {', '.join(cog_list)}")
+
+    @commands.command()
+    @commands.has_permissions(administrator=True) 
+    async def unload(self, ctx, *, cog_name: str):
+        """Unload a cog."""
+        if ctx.author.id not in ALLOWED_ADMIN_USER_IDS:
+            await ctx.send("You don't have permission to use this command.")
+            return
+
+        try:
+            await self.bot.unload_extension(f"cogs.{cog_name}")
+            await ctx.send(f"✅ Unloaded `cogs.{cog_name}`")
+        except Exception as e:
+            await ctx.send(f"❌ Failed to unload `cogs.{cog_name}`: {str(e)}")
+
+    @commands.command()
+    @commands.has_permissions(administrator=True)
+    async def load(self, ctx, *, cog_name: str):
+        """Load a cog."""
+        if ctx.author.id not in ALLOWED_ADMIN_USER_IDS:
+            await ctx.send("You don't have permission to use this command.")
+            return
+
+        try:
+            await self.bot.load_extension(f"cogs.{cog_name}")
+            await ctx.send(f"✅ Loaded `cogs.{cog_name}`")
+        except Exception as e:
+            await ctx.send(f"❌ Failed to load `cogs.{cog_name}`: {str(e)}")
+
+    @commands.command()
+    @commands.has_permissions(administrator=True)
     async def count_unique_users(self, ctx):
         """Count unique users across all community servers (admin only)."""
         if ctx.author.id not in ALLOWED_ADMIN_USER_IDS:

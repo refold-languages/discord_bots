@@ -11,4 +11,6 @@ COGS = [
     'cogs.moderation',
     'cogs.community',
     'cogs.admin',
+    'cogs.course',
+    'cogs.homework',
 ]
