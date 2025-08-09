@@ -75,7 +75,7 @@ async def on_message(message):
                          "The response of your answer should be the same as the users' question, unless the specifically ask for a response in a different language.")
             prompt = message.content
             response = openai_client.chat.completions.create(
-                model="gpt-4o",
+                model="gpt-5-mini-2025-08-07",
                 messages=[
                     {"role": "user", "content": customgpt},
                     {"role": "user", "content": prompt}
@@ -100,7 +100,7 @@ async def on_message(message):
                     messages.insert(0, {"role": "user" if msg.author == message.author else "assistant", "content": msg.content})
 
                 response = openai_client.chat.completions.create(
-                    model="gpt-3.5-turbo",
+                    model="gpt-5-mini-2025-08-07",
                     messages=messages
                 )
                 if response.choices and response.choices[0].message:
