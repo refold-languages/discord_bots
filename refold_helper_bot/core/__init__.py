@@ -4,7 +4,7 @@ Contains data management, schemas, and storage utilities.
 """
 
 from .data_manager import DataManager
-from .schemas import ThreadChannelsSchema, PollChannelsSchema, DataSchema
+from .schemas import ThreadChannelsSchema, PollChannelsSchema, DataSchema, CourseConfigSchema, ApiKeysSchema
 
 __all__ = [
     'DataManager',
@@ -12,4 +12,5 @@ __all__ = [
     'PollChannelsSchema', 
     'DataSchema',
     'CourseConfigSchema',
+    'ApiKeysSchema',
 ]

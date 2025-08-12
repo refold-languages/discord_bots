@@ -10,6 +10,7 @@ from .thread_service import ThreadService, ThreadMessageData
 from .migration_service import MigrationService, MigrationReport
 from .course_service import CourseService, StudentRecord, CourseConfig
 from .homework_service import HomeworkService, HomeworkAssignment
+from .youtube_service import YouTubeService, VideoInfo, ProcessingProgress
 
 __all__ = [
     'BaseService',
@@ -25,4 +26,7 @@ __all__ = [
     'CourseConfig',
     'HomeworkService',
     'HomeworkAssignment',
+    'YouTubeService',
+    'VideoInfo',
+    'ProcessingProgress',
 ]

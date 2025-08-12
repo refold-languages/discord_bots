@@ -79,3 +79,4 @@ unique_users.tsv
 *.tmp
 *.temp
 .cache/
+*.encryption_key

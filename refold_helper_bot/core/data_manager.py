@@ -6,11 +6,13 @@ Handles all data storage operations with validation and backup capabilities.
 import json
 import pickle
 import shutil
+import base64
 from datetime import datetime
 from os import path, makedirs
 from typing import Any, Dict, List, Optional, Set, Tuple
+from cryptography.fernet import Fernet
 
-from .schemas import DataSchema, ThreadChannelsSchema, PollChannelsSchema, ProjectsSchema, CourseConfigSchema, HomeworkAssignmentsSchema
+from .schemas import DataSchema, ThreadChannelsSchema, PollChannelsSchema, ProjectsSchema, CourseConfigSchema, HomeworkAssignmentsSchema, ApiKeysSchema
 
 class DataManager:
     """Unified data manager with schema validation and backup capabilities."""
@@ -23,6 +25,9 @@ class DataManager:
         makedirs(self.data_dir, exist_ok=True)
         makedirs(self.backup_dir, exist_ok=True)
         
+        # Initialize encryption key
+        self._encryption_key = self._get_or_create_encryption_key()
+        
         # Register schemas
         self.schemas = {
             "thread_channels": ThreadChannelsSchema(),
@@ -30,7 +35,25 @@ class DataManager:
             "projects": ProjectsSchema(),
             "course_config": CourseConfigSchema(),
             "homework_assignments": HomeworkAssignmentsSchema(),
+            "api_keys": ApiKeysSchema(),
         }
+    
+    def _get_or_create_encryption_key(self) -> Fernet:
+        """Get or create encryption key for API keys."""
+        key_file = path.join(self.data_dir, ".encryption_key")
+        
+        if path.exists(key_file):
+            with open(key_file, 'rb') as f:
+                key = f.read()
+        else:
+            key = Fernet.generate_key()
+            with open(key_file, 'wb') as f:
+                f.write(key)
+            # Make the key file read-only
+            import os
+            os.chmod(key_file, 0o600)
+        
+        return Fernet(key)
     
     def _get_json_path(self, data_type: str) -> str:
         """Get JSON file path for data type."""
@@ -220,10 +243,89 @@ class DataManager:
         """Clear all thread channels."""
         return self.set_thread_channels(set())
     
+    def store_api_key(self, service_name: str, api_key: str) -> bool:
+        """
+        Store an encrypted API key for a service.
+        
+        Args:
+            service_name: Name of the service (e.g., 'deepseek')
+            api_key: The API key to store
+            
+        Returns:
+            True if successful
+        """
+        data, _ = self.load_data("api_keys")
+        
+        # Encrypt the API key
+        encrypted_key = self._encryption_key.encrypt(api_key.encode()).decode()
+        
+        # Store the encrypted key
+        data["keys"][service_name.lower()] = {
+            "encrypted_key": encrypted_key,
+            "created_at": datetime.now().isoformat()
+        }
+        data["metadata"]["total_keys"] = len(data["keys"])
+        
+        success, error = self.save_data("api_keys", data)
+        return success
+    
+    def get_api_key(self, service_name: str) -> Optional[str]:
+        """
+        Retrieve and decrypt an API key for a service.
+        
+        Args:
+            service_name: Name of the service
+            
+        Returns:
+            Decrypted API key or None if not found
+        """
+        data, _ = self.load_data("api_keys")
+        
+        service_key = service_name.lower()
+        if service_key not in data["keys"]:
+            return None
+        
+        try:
+            encrypted_key = data["keys"][service_key]["encrypted_key"]
+            decrypted_key = self._encryption_key.decrypt(encrypted_key.encode()).decode()
+            return decrypted_key
+        except Exception as e:
+            print(f"Error decrypting API key for {service_name}: {e}")
+            return None
+    
+    def list_api_keys(self) -> List[str]:
+        """List all stored API key service names."""
+        data, _ = self.load_data("api_keys")
+        return list(data["keys"].keys())
+    
+    def remove_api_key(self, service_name: str) -> bool:
+        """
+        Remove an API key for a service.
+        
+        Args:
+            service_name: Name of the service
+            
+        Returns:
+            True if removed, False if not found
+        """
+        data, _ = self.load_data("api_keys")
+        
+        service_key = service_name.lower()
+        if service_key not in data["keys"]:
+            return False
+        
+        del data["keys"][service_key]
+        data["metadata"]["total_keys"] = len(data["keys"])
+        
+        success, error = self.save_data("api_keys", data)
+        return success
+    
     def has_legacy_files(self) -> List[str]:
         """Check for legacy files that need migration."""
         legacy_files = []
         for data_type in self.schemas.keys():
+            if data_type == "api_keys":  # Skip API keys as it's new
+                continue
             legacy_path = self._get_legacy_path(data_type)
             if path.exists(legacy_path):
                 legacy_files.append(legacy_path)
@@ -233,6 +335,8 @@ class DataManager:
         """Migrate all found legacy files."""
         results = {}
         for data_type in self.schemas.keys():
+            if data_type == "api_keys":  # Skip API keys as it's new
+                continue
             legacy_path = self._get_legacy_path(data_type)
             if path.exists(legacy_path):
                 try:
@@ -266,7 +370,7 @@ class DataManager:
                     "exists": True,
                     "was_migrated": was_migrated,
                     "last_updated": data.get("last_updated", "Unknown"),
-                    "item_count": len(data.get("channels", data.keys() if isinstance(data, dict) else [])),
+                    "item_count": len(data.get("channels", data.get("keys", data.keys() if isinstance(data, dict) else []))),
                 }
             except Exception as e:
                 summary[data_type] = {

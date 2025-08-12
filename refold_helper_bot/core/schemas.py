@@ -279,3 +279,57 @@ class HomeworkAssignmentsSchema(DataSchema):
     def migrate_from_legacy(self, legacy_data: Any) -> Dict[str, Any]:
         """No legacy migration needed for new feature."""
         return self.get_default()
+
+
+class ApiKeysSchema(DataSchema):
+    """Schema for encrypted API keys storage."""
+    
+    def validate(self, data: Any) -> Tuple[bool, str]:
+        """Validate API keys data."""
+        if not isinstance(data, dict):
+            return False, "Data must be a dictionary"
+        
+        required_fields = ["version", "keys", "last_updated"]
+        for field in required_fields:
+            if field not in data:
+                return False, f"Missing required field: {field}"
+        
+        if not isinstance(data["version"], str):
+            return False, "Version must be a string"
+        
+        if not isinstance(data["keys"], dict):
+            return False, "Keys must be a dictionary"
+        
+        if not isinstance(data["last_updated"], str):
+            return False, "Last_updated must be a string"
+        
+        # Validate each key entry
+        for service_name, key_data in data["keys"].items():
+            if not isinstance(service_name, str):
+                return False, f"Service name must be string: {service_name}"
+            
+            if not isinstance(key_data, dict):
+                return False, f"Key data for {service_name} must be a dictionary"
+            
+            required_key_fields = ["encrypted_key", "created_at"]
+            for field in required_key_fields:
+                if field not in key_data:
+                    return False, f"Key data for {service_name} missing field: {field}"
+        
+        return True, ""
+    
+    def get_default(self) -> Dict[str, Any]:
+        """Get default API keys structure."""
+        return {
+            "version": "1.0",
+            "keys": {},
+            "last_updated": datetime.now().isoformat(),
+            "metadata": {
+                "description": "Encrypted API keys for external services",
+                "total_keys": 0
+            }
+        }
+    
+    def migrate_from_legacy(self, legacy_data: Any) -> Dict[str, Any]:
+        """No legacy migration needed for new feature."""
+        return self.get_default()
