@@ -4,12 +4,14 @@ Handles all role-related business logic without Discord API dependencies.
 """
 
 import csv
+import re
 from typing import Dict, List, Optional, Set, Tuple
 
 from .base_service import BaseService
 from config.constants import (
     ROLE_MAPPING, REACTION_ROLE_CHANNEL_IDS, THREAD_ROLES, 
-    DISQUALIFIED_ROLES, SPANISH_BOOK_CLUB, LANGUAGE_ROLES_FILE
+    DISQUALIFIED_ROLES, SPANISH_BOOK_CLUB, LANGUAGE_ROLES_FILE,
+    REACTION_ROLES_FILE
 )
 from config.settings import settings
 
@@ -20,12 +22,14 @@ class RoleService(BaseService):
     def __init__(self):
         super().__init__()
         self._language_roles: Dict[str, int] = {}
+        self._reaction_roles: Dict[int, Dict[str, int]] = {}
         self._role_mapping = ROLE_MAPPING.copy()
     
     def initialize(self) -> None:
-        """Initialize the role service by loading language roles."""
+        """Initialize the role service by loading language roles and reaction roles."""
         super().initialize()
         self._load_language_roles()
+        self._load_reaction_roles()
     
     def _load_language_roles(self) -> None:
         """Load language role mappings from TSV file."""
@@ -39,6 +43,47 @@ class RoleService(BaseService):
         except Exception as e:
             print(f"Error loading language roles: {e}")
             self._language_roles = {}
+    
+    def _load_reaction_roles(self) -> None:
+        """Load reaction role mappings from TSV file."""
+        try:
+            with open(REACTION_ROLES_FILE, mode='r', encoding='utf-8') as file:
+                lines = file.readlines()
+                
+                if not lines:
+                    self._reaction_roles = {}
+                    return
+                
+                # Skip header
+                lines = lines[1:]
+                
+                self._reaction_roles = {}
+                for line in lines:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    
+                    # Split by tab first, fallback to whitespace if needed
+                    parts = line.split('\t')
+                    if len(parts) < 3:
+                        parts = re.split(r'\s+', line)
+                    
+                    if len(parts) >= 3:
+                        emoji = parts[0].strip()
+                        role_id = int(parts[1].strip())
+                        channel_id = int(parts[2].strip())
+                        
+                        if channel_id not in self._reaction_roles:
+                            self._reaction_roles[channel_id] = {}
+                        
+                        self._reaction_roles[channel_id][emoji] = role_id
+                        
+        except FileNotFoundError:
+            print(f"Warning: {REACTION_ROLES_FILE} not found")
+            self._reaction_roles = {}
+        except Exception as e:
+            print(f"Error loading reaction roles: {e}")
+            self._reaction_roles = {}
     
     def should_sync_role(self, guild_id: int) -> bool:
         """
@@ -69,7 +114,7 @@ class RoleService(BaseService):
     
     def is_reaction_role_channel(self, channel_id: int) -> bool:
         """
-        Check if a channel has reaction role functionality enabled.
+        Check if a channel has reaction role functionality enabled (legacy system).
         
         Args:
             channel_id: Discord channel ID
@@ -81,7 +126,7 @@ class RoleService(BaseService):
     
     def get_role_for_emoji(self, emoji: str) -> Optional[int]:
         """
-        Get role ID for a given emoji in reaction role system.
+        Get role ID for a given emoji in reaction role system (legacy system).
         
         Args:
             emoji: Emoji string to look up
@@ -94,7 +139,7 @@ class RoleService(BaseService):
     
     def is_valid_reaction_emoji(self, emoji: str) -> bool:
         """
-        Check if an emoji is valid for reaction roles.
+        Check if an emoji is valid for reaction roles (legacy system).
         
         Args:
             emoji: Emoji string to validate
@@ -104,6 +149,39 @@ class RoleService(BaseService):
         """
         self._ensure_initialized()
         return emoji in self._language_roles
+    
+    def get_reaction_role(self, channel_id: int, emoji: str) -> Optional[int]:
+        """
+        Get role ID for a reaction in a specific channel (new expandable system).
+        
+        Args:
+            channel_id: Discord channel ID where reaction occurred
+            emoji: Emoji string that was reacted with
+            
+        Returns:
+            Role ID if mapping exists for this channel+emoji combo, None otherwise
+        """
+        self._ensure_initialized()
+        
+        if channel_id not in self._reaction_roles:
+            return None
+        
+        return self._reaction_roles[channel_id].get(emoji)
+    
+    def is_reaction_role_active(self, channel_id: int, emoji: str) -> bool:
+        """
+        Check if a reaction role is configured for this channel and emoji.
+        
+        Args:
+            channel_id: Discord channel ID
+            emoji: Emoji string
+            
+        Returns:
+            True if this channel+emoji combination has a role configured
+        """
+        self._ensure_initialized()
+        return (channel_id in self._reaction_roles and 
+                emoji in self._reaction_roles[channel_id])
     
     def should_assign_graduate_role(self, thread_id: int, user_role_ids: List[int]) -> Optional[int]:
         """
@@ -116,15 +194,13 @@ class RoleService(BaseService):
         Returns:
             Graduate role ID to assign, None if no role should be assigned
         """
-        # Check if this thread gives graduate roles
         if thread_id not in THREAD_ROLES:
             return None
         
-        # Check if user has any disqualifying roles
         user_roles_set = set(user_role_ids)
         disqualified_set = set(DISQUALIFIED_ROLES)
         
-        if user_roles_set & disqualified_set:  # Intersection check
+        if user_roles_set & disqualified_set:
             return None
         
         return THREAD_ROLES[thread_id]
@@ -162,7 +238,6 @@ class RoleService(BaseService):
         Returns:
             True if assignment is valid
         """
-        # Basic validation - could be expanded with more rules
         if role_id <= 0 or user_id <= 0:
             return False
         
@@ -179,16 +254,13 @@ class RoleService(BaseService):
         
         managed_roles = set()
         
-        # Add cross-server sync roles
         managed_roles.update(int(role_id) for role_id in self._role_mapping.values())
-        
-        # Add reaction roles
         managed_roles.update(self._language_roles.values())
         
-        # Add graduate roles
-        managed_roles.update(THREAD_ROLES.values())
+        for channel_roles in self._reaction_roles.values():
+            managed_roles.update(channel_roles.values())
         
-        # Add special roles
+        managed_roles.update(THREAD_ROLES.values())
         managed_roles.add(SPANISH_BOOK_CLUB['role_id'])
         
         return managed_roles
@@ -203,6 +275,19 @@ class RoleService(BaseService):
         self._ensure_initialized()
         return self._language_roles.copy()
     
+    def get_reaction_roles_mapping(self) -> Dict[int, Dict[str, int]]:
+        """
+        Get copy of current reaction roles mapping.
+        
+        Returns:
+            Dictionary mapping channel IDs to emoji-role mappings
+        """
+        self._ensure_initialized()
+        return {
+            channel_id: roles.copy() 
+            for channel_id, roles in self._reaction_roles.items()
+        }
+    
     def reload_language_roles(self) -> bool:
         """
         Reload language roles from file.
@@ -215,4 +300,18 @@ class RoleService(BaseService):
             return True
         except Exception as e:
             print(f"Failed to reload language roles: {e}")
+            return False
+    
+    def reload_reaction_roles(self) -> bool:
+        """
+        Reload reaction roles from file.
+        
+        Returns:
+            True if reload was successful
+        """
+        try:
+            self._load_reaction_roles()
+            return True
+        except Exception as e:
+            print(f"Failed to reload reaction roles: {e}")
             return False

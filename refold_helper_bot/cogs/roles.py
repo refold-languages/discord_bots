@@ -67,116 +67,187 @@ class Roles(commands.Cog):
             if role_id:
                 await self._remove_role_from_member(member, role_id)
 
-    # Reaction role system
+    # New expandable reaction role system
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload):
-        """Handle reaction additions for roles and bookmarks."""
-        if payload.user_id == self.bot.user.id:
-            return  # Ignore bot's own reactions
-
-        user = await self.bot.fetch_user(payload.user_id)
-        channel = await self.bot.fetch_channel(payload.channel_id)
-        message = await channel.fetch_message(payload.message_id)
-        emoji = str(payload.emoji)
-
-        # Delete bot's own DM message if ❌ is added
-        if emoji == '❌' and isinstance(channel, discord.DMChannel) and message.author == self.bot.user:
-            await message.delete()
+        """Handle reaction additions for new reaction role system."""
+        # Skip bot reactions
+        if payload.member and payload.member.bot:
             return
-
-        # Bookmark reaction
-        if emoji == '🔖':
-            guild = await self.bot.fetch_guild(payload.guild_id)
-            embed = discord.Embed(title='You made a bookmark!', description='', color=0xc91f16)
-            embed.add_field(name='The message said:', value=f'{message.content}', inline=True)
-            msg = await user.send(f'Click to view original message: https://discord.com/channels/{guild.id}/{channel.id}/{message.id}', embed=embed)
-            await msg.add_reaction('❌')
-
-        # Role reaction section
-        if payload.guild_id and self.role_service.is_reaction_role_channel(payload.channel_id):
-            guild = await self.bot.fetch_guild(payload.guild_id)
-            member = await guild.fetch_member(payload.user_id)
+        
+        # Convert emoji to string format
+        emoji_str = str(payload.emoji)
+        
+        # Check new reaction role system first
+        role_id = self.role_service.get_reaction_role(payload.channel_id, emoji_str)
+        
+        if role_id:
+            # Get the guild and member
+            guild = self.bot.get_guild(payload.guild_id)
+            if not guild:
+                return
             
-            if self.role_service.is_valid_reaction_emoji(emoji):
-                role_id = self.role_service.get_role_for_emoji(emoji)
-                if role_id:
-                    role = guild.get_role(role_id)
-                    if role:
-                        await member.add_roles(role)
-            else:
-                await message.remove_reaction(emoji, user)
+            member = guild.get_member(payload.user_id)
+            if not member:
+                return
+            
+            # Get the role
+            role = guild.get_role(role_id)
+            if not role:
+                return
+            
+            # Check if member already has role
+            if role in member.roles:
+                return
+            
+            # Assign the role
+            try:
+                await member.add_roles(role)
+            except discord.HTTPException:
+                pass
+            return
+        
+        # Fall back to legacy language role system if no new system match
+        if self.role_service.is_reaction_role_channel(payload.channel_id):
+            role_id = self.role_service.get_role_for_emoji(emoji_str)
+            
+            if role_id:
+                guild = self.bot.get_guild(payload.guild_id)
+                if not guild:
+                    return
+                
+                member = guild.get_member(payload.user_id)
+                if not member:
+                    return
+                
+                role = guild.get_role(role_id)
+                if not role:
+                    return
+                
+                try:
+                    await member.add_roles(role)
+                except discord.HTTPException:
+                    pass
 
     @commands.Cog.listener()
     async def on_raw_reaction_remove(self, payload):
-        """Handle reaction removals for role system."""
-        if self.role_service.is_reaction_role_channel(payload.channel_id):
-            guild = await self.bot.fetch_guild(payload.guild_id)
-            member = await guild.fetch_member(payload.user_id)
-            emoji = str(payload.emoji)
+        """Handle reaction removals for new reaction role system."""
+        # Convert emoji to string format
+        emoji_str = str(payload.emoji)
+        
+        # Check new reaction role system first
+        role_id = self.role_service.get_reaction_role(payload.channel_id, emoji_str)
+        
+        if role_id:
+            # Get the guild
+            guild = self.bot.get_guild(payload.guild_id)
+            if not guild:
+                return
             
-            if self.role_service.is_valid_reaction_emoji(emoji):
-                role_id = self.role_service.get_role_for_emoji(emoji)
-                if role_id:
-                    role = guild.get_role(role_id)
-                    if role:
-                        await member.remove_roles(role)
+            # Get the member
+            member = guild.get_member(payload.user_id)
+            if not member:
+                return
+            
+            # Get the role
+            role = guild.get_role(role_id)
+            if not role:
+                return
+            
+            # Remove the role
+            try:
+                await member.remove_roles(role)
+            except discord.HTTPException:
+                pass
+            return
+        
+        # Fall back to legacy language role system if no new system match
+        if self.role_service.is_reaction_role_channel(payload.channel_id):
+            role_id = self.role_service.get_role_for_emoji(emoji_str)
+            
+            if role_id:
+                guild = self.bot.get_guild(payload.guild_id)
+                if not guild:
+                    return
+                
+                member = guild.get_member(payload.user_id)
+                if not member:
+                    return
+                
+                role = guild.get_role(role_id)
+                if not role:
+                    return
+                
+                try:
+                    await member.remove_roles(role)
+                except discord.HTTPException:
+                    pass
 
     # Graduate role assignment
     @commands.Cog.listener()
     async def on_message(self, message):
-        """Handle graduate role assignment when posting in Day 30 threads."""
-        if message.channel.type == discord.ChannelType.public_thread:
+        """Handle graduate role assignment when users post in specific threads."""
+        if message.author.bot:
+            return
+        
+        if isinstance(message.channel, discord.Thread):
             user_role_ids = [role.id for role in message.author.roles]
             graduate_role_id = self.role_service.should_assign_graduate_role(
                 message.channel.id, user_role_ids
             )
             
             if graduate_role_id:
-                role_to_add = message.guild.get_role(graduate_role_id)
-                if role_to_add:
-                    await message.author.add_roles(role_to_add)
-                    print(f"Assigned role {role_to_add.name} to {message.author.name}")
+                role = message.guild.get_role(graduate_role_id)
+                if role and role not in message.author.roles:
+                    try:
+                        await message.author.add_roles(role)
+                    except discord.HTTPException:
+                        pass
 
-    # Spanish Book Club role toggle
-    @commands.command(help='Toggle your Spanish Book Club role. Requires membership in the Spanish server.', 
-                     category='General Commands')
-    async def spanishbookclub(self, ctx):
-        """Toggle Spanish Book Club role for Spanish server members."""
-        target_guild_id, role_id = self.role_service.get_spanish_book_club_config()
-
-        target_guild = self.bot.get_guild(target_guild_id)
-        if not target_guild:
-            await ctx.send("An error occurred. Please try again later.")
-            return
-
-        # Get set of member IDs for validation
-        guild_member_ids = {member.id for member in target_guild.members}
+    # Spanish Book Club toggle
+    @commands.command(name='spanishbook')
+    async def toggle_spanish_book_club(self, ctx):
+        """Toggle Spanish Book Club role."""
+        guild_id, role_id = self.role_service.get_spanish_book_club_config()
         
-        if not self.role_service.can_toggle_spanish_book_club(ctx.author.id, guild_member_ids):
-            await ctx.send("You must join the Spanish server to use this command.")
+        spanish_guild = self.bot.get_guild(guild_id)
+        if not spanish_guild:
+            await ctx.send("Spanish server not found.")
             return
-
-        role = target_guild.get_role(role_id)
+        
+        spanish_members = {member.id for member in spanish_guild.members}
+        
+        if not self.role_service.can_toggle_spanish_book_club(ctx.author.id, spanish_members):
+            await ctx.send("You must be a member of the Spanish server to use this command.")
+            return
+        
+        from config.settings import settings
+        main_guild = self.bot.get_guild(settings.MAIN_SERVER_ID)
+        if not main_guild:
+            await ctx.send("Main server not found.")
+            return
+        
+        role = main_guild.get_role(role_id)
         if not role:
-            await ctx.send("An error occurred. The role does not exist.")
+            await ctx.send("Spanish Book Club role not found.")
             return
-
-        member = target_guild.get_member(ctx.author.id)
+        
+        member = main_guild.get_member(ctx.author.id)
         if not member:
-            await ctx.send("You must join the Spanish server to use this command.")
+            await ctx.send("You are not a member of the main server.")
             return
-
+        
         try:
             if role in member.roles:
                 await member.remove_roles(role)
-                await ctx.send("The Spanish Book Club role has been removed.")
+                await ctx.send("Spanish Book Club role removed.")
             else:
                 await member.add_roles(role)
-                await ctx.send("The Spanish Book Club role has been added.")
-        except discord.HTTPException as e:
-            await ctx.send(f"Failed to update your role: {e}")
+                await ctx.send("Spanish Book Club role added.")
+        except discord.HTTPException:
+            await ctx.send("Failed to toggle role. Please try again later.")
 
 
 async def setup(bot):
-    """Add the Roles cog to the bot."""
+    """Required setup function for cog loading."""
     await bot.add_cog(Roles(bot))

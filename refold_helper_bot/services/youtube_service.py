@@ -149,9 +149,71 @@ class YouTubeService(BaseService):
             self.logger.error("video_info_exception", url=url, error=str(e), error_type=type(e).__name__)
             return None
     
+    async def get_available_subtitle_languages(self, url: str) -> List[str]:
+        """
+        Get list of available subtitle languages for a video.
+        
+        Args:
+            url: YouTube video URL
+            
+        Returns:
+            List of available language codes
+        """
+        try:
+            cmd = [
+                'yt-dlp',
+                '--list-subs',
+                '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                '--no-warnings',
+                url
+            ]
+            
+            def run_subprocess():
+                return subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(None, run_subprocess)
+            
+            if result.returncode != 0:
+                self.logger.warning("subtitle_list_failed", url=url, error=result.stderr)
+                return []
+            
+            # Parse the output to extract language codes
+            # Looking for patterns like:
+            # "es                            vtt"
+            # "en       English              vtt, srt, ttml..."
+            # "es        Spanish vtt, srt, ttml..."
+            
+            languages = set()  # Use set to avoid duplicates
+            lines = result.stdout.split('\n')
+            
+            for line in lines:
+                line = line.strip()
+                
+                # Skip header lines and empty lines
+                if not line or line.startswith('[') or line.startswith('Language') or line.startswith('live_chat'):
+                    continue
+                
+                # Look for lines that start with a language code
+                # Language codes are typically 2-5 characters at the start of the line
+                parts = line.split()
+                if parts:
+                    potential_lang = parts[0]
+                    # Check if it looks like a language code (2-5 chars, possibly with hyphens)
+                    if len(potential_lang) >= 2 and len(potential_lang) <= 5 and potential_lang.replace('-', '').isalpha():
+                        languages.add(potential_lang)
+            
+            language_list = list(languages)
+            self.logger.info("subtitle_languages_found", url=url, languages=language_list)
+            return language_list
+            
+        except Exception as e:
+            self.logger.warning("subtitle_languages_error", url=url, error=str(e))
+            return []
+    
     async def download_subtitles(self, url: str) -> Tuple[Optional[str], Optional[str]]:
         """
-        Download subtitles from YouTube video.
+        Download subtitles from YouTube video, trying multiple languages.
         
         Args:
             url: YouTube video URL
@@ -161,57 +223,133 @@ class YouTubeService(BaseService):
         """
         with tempfile.TemporaryDirectory() as temp_dir:
             try:
-                # Try auto-generated subtitles first
-                cmd = [
-                    'yt-dlp',
-                    '--write-auto-subs',
-                    '--sub-lang', 'en',
-                    '--sub-format', 'srt',
-                    '--skip-download',
-                    '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                    '--output', f'{temp_dir}/%(title)s.%(ext)s',
-                    '--no-warnings',
-                    url
-                ]
+                self.logger.info("starting_subtitle_download", url=url)
                 
-                # Create wrapper function for subprocess call
-                def run_subprocess():
-                    return subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+                # Get available subtitle languages
+                available_languages = await self.get_available_subtitle_languages(url)
+                self.logger.info("available_languages_result", url=url, languages=available_languages)
                 
-                # Run in thread pool to avoid blocking
-                loop = asyncio.get_event_loop()
-                result = await loop.run_in_executor(None, run_subprocess)
+                # Define priority order for languages to try
+                # Try English first, then common languages, then whatever's available
+                priority_languages = ['en', 'es', 'fr', 'de', 'pt', 'it', 'ja', 'ko', 'zh']
                 
-                # If auto-subs failed, try manual subtitles
-                if result.returncode != 0:
-                    self.logger.info("auto_subs_failed_trying_manual", 
-                                   url=url, 
-                                   error=result.stderr.strip() if result.stderr else "Unknown")
-                    cmd[1] = '--write-subs'  # Change to manual subs
-                    result = await loop.run_in_executor(None, run_subprocess)
+                # Build list of languages to try in order
+                languages_to_try = []
                 
-                if result.returncode != 0:
-                    error_msg = result.stderr.strip() if result.stderr else "Unknown error"
-                    self.logger.error("subtitle_download_failed", 
-                                    url=url, 
-                                    return_code=result.returncode,
-                                    error=error_msg)
+                # Add priority languages that are available
+                for lang in priority_languages:
+                    if lang in available_languages:
+                        languages_to_try.append(lang)
+                
+                # Add any other available languages
+                for lang in available_languages:
+                    if lang not in languages_to_try:
+                        languages_to_try.append(lang)
+                
+                # If no languages found, try English as fallback
+                if not languages_to_try:
+                    self.logger.warning("no_languages_available_using_fallback", url=url)
+                    languages_to_try = ['en']
+                
+                self.logger.info("attempting_subtitle_download", 
+                               url=url, 
+                               available_languages=available_languages,
+                               trying_languages=languages_to_try[:3])  # Log first 3 to avoid spam
+                
+                subtitle_content = None
+                successful_language = None
+                last_error = None
+                
+                # Try each language until one works
+                for lang in languages_to_try:
+                    try:
+                        self.logger.info("trying_language", url=url, language=lang)
+                        
+                        # Try auto-generated subtitles first
+                        cmd = [
+                            'yt-dlp',
+                            '--write-auto-subs',
+                            '--sub-lang', lang,
+                            '--sub-format', 'srt',
+                            '--skip-download',
+                            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                            '--output', f'{temp_dir}/%(title)s.%(ext)s',
+                            '--no-warnings',
+                            url
+                        ]
+                        
+                        # Create wrapper function for subprocess call
+                        def run_subprocess():
+                            return subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+                        
+                        # Run in thread pool to avoid blocking
+                        loop = asyncio.get_event_loop()
+                        result = await loop.run_in_executor(None, run_subprocess)
+                        
+                        self.logger.info("auto_subs_result", 
+                                       url=url, 
+                                       language=lang, 
+                                       return_code=result.returncode,
+                                       stderr_length=len(result.stderr),
+                                       stdout_length=len(result.stdout))
+                        
+                        # If auto-subs failed, try manual subtitles
+                        if result.returncode != 0:
+                            self.logger.info("auto_subs_failed_trying_manual", 
+                                           url=url, 
+                                           language=lang,
+                                           error=result.stderr[:200])
+                            cmd[1] = '--write-subs'  # Change to manual subs
+                            result = await loop.run_in_executor(None, run_subprocess)
+                            
+                            self.logger.info("manual_subs_result", 
+                                           url=url, 
+                                           language=lang, 
+                                           return_code=result.returncode)
+                        
+                        if result.returncode == 0:
+                            # Check if subtitle files were created
+                            subtitle_files = list(Path(temp_dir).glob('*.srt'))
+                            self.logger.info("subtitle_files_found", 
+                                           url=url, 
+                                           language=lang, 
+                                           file_count=len(subtitle_files))
+                            
+                            if subtitle_files:
+                                # Read subtitle content
+                                with open(subtitle_files[0], 'r', encoding='utf-8') as f:
+                                    subtitle_content = f.read()
+                                successful_language = lang
+                                
+                                self.logger.info("subtitle_content_read", 
+                                               url=url, 
+                                               language=lang, 
+                                               content_length=len(subtitle_content))
+                                break
+                        else:
+                            last_error = result.stderr
+                            self.logger.warning("subtitle_download_failed_for_lang", 
+                                              url=url, 
+                                              language=lang, 
+                                              error=result.stderr[:200])
                     
-                    # Check for common error patterns
-                    if "no subtitles" in error_msg.lower() or "no automatic captions" in error_msg.lower():
-                        raise ValidationError("This video doesn't have English subtitles available.")
-                    elif "private" in error_msg.lower():
-                        raise ValidationError("This video is private or unavailable.")
-                    elif "geo" in error_msg.lower() or "blocked" in error_msg.lower():
-                        raise ValidationError("This video is geo-blocked or restricted.")
-                    else:
-                        raise ValidationError(f"Failed to download subtitles: {error_msg}")
+                    except Exception as e:
+                        last_error = str(e)
+                        self.logger.error("subtitle_download_lang_exception", 
+                                        url=url, language=lang, error=str(e))
+                        continue
                 
-                # Find subtitle file
-                subtitle_files = list(Path(temp_dir).glob('*.srt'))
-                if not subtitle_files:
-                    self.logger.warning("no_subtitle_files_found", url=url)
-                    raise ValidationError("No subtitle files were downloaded.")
+                if not subtitle_content:
+                    self.logger.error("no_subtitles_any_language", 
+                                    url=url, 
+                                    tried_languages=languages_to_try,
+                                    last_error=last_error)
+                    
+                    # Provide more specific error message
+                    if last_error:
+                        raise ValidationError(f"No subtitles found in any language for this video. Last error: {last_error[:100]}")
+                    else:
+                        raise ValidationError("No subtitles found in any language for this video.")
                 
                 # Get video title
                 title_cmd = [
@@ -228,12 +366,11 @@ class YouTubeService(BaseService):
                 title_result = await loop.run_in_executor(None, run_title_subprocess)
                 video_title = title_result.stdout.strip() if title_result.returncode == 0 else "Unknown Title"
                 
-                # Read subtitle content
-                with open(subtitle_files[0], 'r', encoding='utf-8') as f:
-                    subtitle_content = f.read()
-                
                 self.logger.info("subtitles_downloaded_successfully", 
-                               url=url, title=video_title, content_length=len(subtitle_content))
+                               url=url, 
+                               title=video_title, 
+                               language=successful_language,
+                               content_length=len(subtitle_content))
                 
                 return subtitle_content, video_title
                 
@@ -324,7 +461,7 @@ class YouTubeService(BaseService):
             cleaned = cleaned[:-3].strip()
         
         return cleaned
-
+    
     async def call_deepseek_api(self, text: str, video_title: str) -> Optional[str]:
         """
         Call Deepseek API to convert transcript to blog post.
@@ -521,7 +658,7 @@ Please format this as a clean, readable markdown blog post. Include no other con
         
         subtitle_content, video_title = await self.download_subtitles(url)
         if not subtitle_content:
-            raise ValidationError("No subtitles found for this video. The video needs English subtitles to be processed.")
+            raise ValidationError("No subtitles found for this video. The video needs subtitles to be processed.")
         
         # Clean subtitles
         clean_text = self.clean_srt_subtitles(subtitle_content)

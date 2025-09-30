@@ -340,6 +340,93 @@ class Resources(commands.Cog):
         else:
             await ctx.send(f'{target.avatar}')
 
+    # Add this new debug command to resources.py
+    @commands.command(name='debugsubtitles')
+    @commands.has_permissions(administrator=True)
+    async def debug_subtitles(self, ctx, *, url: str):
+        """Debug subtitle processing for a specific video."""
+        
+        if not self.youtube_service.validate_youtube_url(url):
+            await ctx.send("❌ Invalid YouTube URL")
+            return
+        
+        await ctx.send(f"🔍 **Debugging subtitle process for:** {url}")
+        
+        # Test 1: List available subtitles
+        try:
+            await ctx.send("📋 **Step 1: Getting available subtitle languages...**")
+            languages = await self.youtube_service.get_available_subtitle_languages(url)
+            await ctx.send(f"✅ **Available languages:** {languages}")
+        except Exception as e:
+            await ctx.send(f"❌ **Step 1 failed:** {str(e)}")
+            return
+        
+        # Test 2: Try downloading subtitles manually for each language
+        if languages:
+            for lang in languages[:3]:  # Test first 3 languages only
+                try:
+                    await ctx.send(f"🔄 **Step 2: Testing download for language '{lang}'...**")
+                    
+                    # Test the actual download command manually
+                    import subprocess
+                    import tempfile
+                    import asyncio
+                    from pathlib import Path
+                    
+                    with tempfile.TemporaryDirectory() as temp_dir:
+                        cmd = [
+                            'yt-dlp',
+                            '--write-auto-subs',
+                            '--sub-lang', lang,
+                            '--sub-format', 'srt',
+                            '--skip-download',
+                            '--output', f'{temp_dir}/%(title)s.%(ext)s',
+                            '--no-warnings',
+                            url
+                        ]
+                        
+                        def run_test():
+                            return subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                        
+                        loop = asyncio.get_event_loop()
+                        result = await loop.run_in_executor(None, run_test)
+                        
+                        await ctx.send(f"**Command:** `{' '.join(cmd[:4])} {lang} ...`")
+                        await ctx.send(f"**Return code:** {result.returncode}")
+                        
+                        if result.returncode == 0:
+                            subtitle_files = list(Path(temp_dir).glob('*.srt'))
+                            await ctx.send(f"✅ **Success! Files created:** {len(subtitle_files)}")
+                            if subtitle_files:
+                                with open(subtitle_files[0], 'r', encoding='utf-8') as f:
+                                    content = f.read()
+                                    preview = content[:200] + "..." if len(content) > 200 else content
+                                    await ctx.send(f"**Content preview:** ```{preview}```")
+                            break
+                        else:
+                            await ctx.send(f"❌ **Failed for {lang}:** ```{result.stderr[:500]}```")
+                
+                except Exception as e:
+                    await ctx.send(f"❌ **Exception testing {lang}:** {str(e)}")
+        
+        # Test 3: Try the actual service method
+        try:
+            await ctx.send("🔄 **Step 3: Testing actual service method...**")
+            subtitle_content, video_title = await self.youtube_service.download_subtitles(url)
+            
+            if subtitle_content:
+                await ctx.send(f"✅ **Service method success!**")
+                await ctx.send(f"**Title:** {video_title}")
+                await ctx.send(f"**Content length:** {len(subtitle_content)} chars")
+                preview = subtitle_content[:200] + "..." if len(subtitle_content) > 200 else subtitle_content
+                await ctx.send(f"**Content preview:** ```{preview}```")
+            else:
+                await ctx.send("❌ **Service method returned None**")
+                
+        except Exception as e:
+            await ctx.send(f"❌ **Service method exception:** {str(e)}")
+            await ctx.send(f"**Exception type:** {type(e).__name__}")
+
 async def setup(bot):
     """Add the Resources cog to the bot."""
     await bot.add_cog(Resources(bot))
