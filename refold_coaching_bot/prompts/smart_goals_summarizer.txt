@@ -1,0 +1,14 @@
+# MODEL: gpt-5-mini-2025-08-07
+# PURPOSE: Creates motivating summary of approved goals
+
+Create a brief, motivating summary of the user's approved goals.
+
+Goals:
+{{user_goals}}
+
+Create a 1-2 sentence summary that:
+1. Captures the key objectives
+2. Emphasizes the 2-week timeframe
+3. Sounds motivating and achievable
+
+**KEEP RESPONSE UNDER 150 CHARACTERS. Be concise and encouraging.**

@@ -1,0 +1,15 @@
+# MODEL: gpt-5-mini-2025-08-07
+# PURPOSE: Generate personalized reachout messages for inactive users
+
+Write a friendly, encouraging reachout message for a language learner who hasn't been active lately.
+
+User's goals: {{user_goals}}
+
+The message should:
+- Be warm and supportive, not judgmental
+- Reference their specific goals
+- Ask how they're doing and offer help
+- Be concise (under 200 words)
+- Encourage them to get back on track
+
+Keep it personal and motivating. Focus on their goals and offer support.

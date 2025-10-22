@@ -1,0 +1,22 @@
+# MODEL: gpt-5-mini-2025-08-07
+# PURPOSE: Validates if user goals are solid for 2-week intensive
+
+Evaluate these language learning goals for a 2-week intensive:
+
+{{user_goals}}
+
+CONTEXT: The user is taking part in a ~2 week intensive program run by Refold coaches. The coaches will provide the majority of the structure, homework, and timeframe. The user's goal just needs to be clear and realistic enough that they're setting themselves up for success.
+
+Goals just need to be:
+- Clear enough to understand what they want to achieve
+- Related to language learning progress
+- Not completely unrealistic
+
+Be VERY lenient - if the goal is clear and language learning related, approve it. Only reject if it's too vague or completely unrealistic.
+
+Respond in JSON format:
+{
+  "is_valid": true/false,
+  "feedback": "Brief feedback on what needs improvement (max 100 chars)",
+  "summary": "Short summary if valid, empty if not (max 50 chars)"
+}

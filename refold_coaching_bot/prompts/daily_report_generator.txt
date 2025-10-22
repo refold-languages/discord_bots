@@ -1,0 +1,17 @@
+# MODEL: gpt-5-nano-2025-08-07
+# PURPOSE: Generates daily summary reports for coaches
+
+Generate a daily coaching report based on this data:
+
+Most Active Users: {{most_active}}
+Least Active Users: {{least_active}}
+New Activity Feed Entries: {{activity_entries}}
+Users Reached Out To: {{reachouts}}
+
+Create a concise, professional report for coaches highlighting:
+1. Key activity trends
+2. Users who need attention
+3. Notable progress or concerns
+4. Recommendations for follow-up
+
+Keep it under 500 words and use bullet points for clarity.

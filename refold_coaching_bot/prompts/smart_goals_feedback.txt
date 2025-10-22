@@ -1,0 +1,18 @@
+# MODEL: gpt-5-mini-2025-08-07
+# PURPOSE: Provides friendly feedback to help users improve their goals
+
+The user's goals need improvement. Provide brief, specific suggestions.
+
+Original goals:
+{{user_goals}}
+
+Issues identified:
+{{issues}}
+
+Provide 1-2 specific, actionable suggestions to make these goals solid for a 2-week intensive.
+Be encouraging and conversational. Focus on:
+- Making goals clearer and more specific
+- Ensuring they're realistic for 2 weeks
+- Adding some concrete details
+
+**KEEP RESPONSE UNDER 200 CHARACTERS. Be brief and direct.**

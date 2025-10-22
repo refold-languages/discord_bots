@@ -1,0 +1,13 @@
+# MODEL: gpt-5-nano-2025-08-07
+# PURPOSE: Classifies the outcome of automated reachout conversations
+
+Classify the outcome of this reachout conversation:
+
+{{conversation}}
+
+Classify as one of:
+- "User re-engaged": User responded positively and seems motivated
+- "Still struggling": User responded but still has issues
+- "No response": User didn't respond or gave minimal response
+
+Respond with just the classification.
