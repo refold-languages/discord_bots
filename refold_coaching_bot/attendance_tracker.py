@@ -77,23 +77,14 @@ class AttendanceTracker:
     async def find_matching_username(self, channel, input_username: str) -> Optional[str]:
         """Search activity feed for matching username (case-insensitive partial match)."""
         try:
-            # Get the activity feed channel
-            activity_channel = channel.guild.get_channel(config.ACTIVITY_FEED_CHANNEL_ID)
-            if not activity_channel:
-                return None
+            # Load activity feed data from JSON file instead of Discord messages
+            activity_entries = data_manager.get_recent_activity_feed(days=2)  # Last 2 days
             
-            # Fetch recent messages (last 2000 messages)
-            messages = []
-            async for message in activity_channel.history(limit=2000):
-                if message.content:
-                    messages.append(message.content)
-            
-            # Search for usernames in activity feed format
+            # Extract unique usernames from activity entries
             found_usernames = []
-            for message_content in messages:
-                match = self.activity_pattern.search(message_content)
-                if match:
-                    flag, username, activity, time_value, time_unit = match.groups()
+            for entry in activity_entries:
+                username = entry.get('username', '')
+                if username and username not in found_usernames:
                     found_usernames.append(username)
             
             # Look for matches (case-insensitive)

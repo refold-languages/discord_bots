@@ -40,7 +40,6 @@ class RefoldCoachingBot(commands.Bot):
         
         # Track ongoing conversations
         self.ongoing_conversations = {}  # user_id -> conversation_state
-        self.thread_conversations = {}  # thread_id -> conversation_history
     
     async def setup_hook(self):
         """Setup tasks when bot starts."""
@@ -50,6 +49,9 @@ class RefoldCoachingBot(commands.Bot):
         
         if not self.reachout_check.is_running():
             self.reachout_check.start()
+        
+        if not self.username_verification_check.is_running():
+            self.username_verification_check.start()
     
     async def on_ready(self):
         """Called when bot is ready."""
@@ -107,16 +109,69 @@ class RefoldCoachingBot(commands.Bot):
     
     async def _handle_bot_chat_message(self, message):
         """Handle messages in the bot chat channel."""
+        user_id = message.author.id
+        conversation_state = self.ongoing_conversations.get(user_id)
+        
+        # Check if user is in goal update conversation
+        if conversation_state == 'updating_goals_conversation':
+            # Handle goal update conversation in thread
+            await self._handle_goal_update_conversation(message)
+            return
+        
+        # Check for natural language goal update requests
+        message_lower = message.content.lower()
+        goal_update_keywords = [
+            'update my goals', 'change my goals', 'new goals', 'revise my goals',
+            'modify my goals', 'tweak my goals', 'adjust my goals', 'edit my goals',
+            'i want to update my goals', 'i want to change my goals',
+            'i need to update my goals', 'i need to change my goals'
+        ]
+        
+        if any(keyword in message_lower for keyword in goal_update_keywords):
+            # Check if user is registered
+            user = data_manager.get_user(user_id)
+            if not user:
+                await message.channel.send("❌ You're not registered for the intensive. Please join first!")
+                return
+            
+            # Create thread for goal update conversation
+            thread_name = f"Goal Update - {message.author.display_name}"
+            thread = await message.create_thread(name=thread_name, auto_archive_duration=60)
+            
+            # Get current goals
+            current_goals = user.get('goals', 'No goals set')
+            
+            # Set simple conversation state
+            self.ongoing_conversations[user_id] = 'updating_goals_simple'
+            self.ongoing_conversations[f"{user_id}_current_goals"] = current_goals
+            
+            # Send simple message
+            await thread.send(f"Your current goals: **{current_goals}**\n\nWhat would you like to change them to?")
+            return
+        
         # Create thread for conversation
         if not isinstance(message.channel, discord.Thread):
             thread_name = f"Chat with {message.author.display_name}"
             thread = await message.create_thread(name=thread_name, auto_archive_duration=60)
             
-            # Initialize conversation history
-            self.thread_conversations[thread.id] = []
+            # Get user context with rankings
+            user_context = self._build_user_context(message.author.id)
             
-            # Send initial response with typing indicator
-            async with thread.typing():
+            # Immediately process the original message with GPT
+            if message.content:  # Only process if message has content
+                try:
+                    async with thread.typing():
+                        # Create conversation array with the original message
+                        messages = [{'role': 'user', 'content': message.content}]
+                        response = gpt_handler.get_chat_response(messages, user_context)
+                        
+                        # Send response
+                        await self.send_ai_response(thread, response)
+                except Exception as e:
+                    print(f"Error generating chat response: {e}")
+                    await thread.send("❌ Sorry, I'm having trouble responding right now. Please try again in a moment.")
+            else:
+                # If message has no content, send a generic response
                 await thread.send("Hi! I'm your Refold Coach Bot. How can I help you today?")
         
         # Handle thread messages
@@ -127,6 +182,25 @@ class RefoldCoachingBot(commands.Bot):
         """Handle messages in threads (onboarding or bot chat)."""
         thread_id = message.channel.id
         user_id = message.author.id
+        conversation_state = self.ongoing_conversations.get(user_id)
+        
+        # Check if user is in goal update conversation
+        if conversation_state == 'updating_goals_simple':
+            # Handle simple goal update
+            user = data_manager.get_user(user_id)
+            if user:
+                # Update goals directly
+                user['goals'] = message.content
+                data_manager.save_user(user_id, user)
+                await message.channel.send(f"✅ Goals updated to: **{message.content}**")
+            else:
+                await message.channel.send("❌ Error: Could not find your user data.")
+            
+            # Clean up conversation state
+            del self.ongoing_conversations[user_id]
+            if f"{user_id}_current_goals" in self.ongoing_conversations:
+                del self.ongoing_conversations[f"{user_id}_current_goals"]
+            return
         
         # Check if this is an onboarding thread
         if user_id in self.ongoing_conversations:
@@ -139,36 +213,54 @@ class RefoldCoachingBot(commands.Bot):
     async def _handle_bot_chat_thread_message(self, message):
         """Handle messages in bot chat threads."""
         thread_id = message.channel.id
+        user_id = message.author.id
         
-        # Get user context
-        user = data_manager.get_user(message.author.id)
-        user_context = {
-            'goals': user.get('goals', 'No goals set') if user else 'No goals set',
-            'app_username': user.get('app_username', 'Not provided') if user else 'Not provided'
-        }
+        # Check for natural language goal update requests
+        message_lower = message.content.lower()
+        goal_update_keywords = [
+            'update my goals', 'change my goals', 'new goals', 'revise my goals',
+            'modify my goals', 'tweak my goals', 'adjust my goals', 'edit my goals',
+            'i want to update my goals', 'i want to change my goals',
+            'i need to update my goals', 'i need to change my goals'
+        ]
         
-        # Add message to conversation history
-        if thread_id not in self.thread_conversations:
-            self.thread_conversations[thread_id] = []
+        if any(keyword in message_lower for keyword in goal_update_keywords):
+            # Check if user is registered
+            user = data_manager.get_user(user_id)
+            if not user:
+                await message.channel.send("❌ You're not registered for the intensive. Please join first!")
+                return
+            
+            # Start goal update conversation
+            self.ongoing_conversations[user_id] = 'updating_goals'
+            await message.channel.send("What are your new goals for the intensive?")
+            return
         
-        self.thread_conversations[thread_id].append({
-            'role': 'user',
-            'content': message.content
-        })
+        # Get user context with rankings
+        user_context = self._build_user_context(message.author.id)
+        
+        # Fetch conversation history from Discord thread (last 10 messages)
+        messages = []
+        async for msg in message.channel.history(limit=10):
+            # Skip empty messages or bot messages that are just disclaimers or error messages
+            if not msg.content or (msg.author == self.user and (msg.content.startswith("-#") or "❌" in msg.content)):
+                continue
+            # Proper role attribution: user messages vs bot messages
+            role = "user" if msg.author != self.user else "assistant"
+            messages.insert(0, {"role": role, "content": msg.content})
+        
+        # Ensure we have at least the current message if history is empty
+        if not messages and message.content:
+            messages = [{"role": "user", "content": message.content}]
+        
+        # Skip processing if no valid messages
+        if not messages:
+            return
         
         # Generate response with typing indicator
         try:
             async with message.channel.typing():
-                response = gpt_handler.get_chat_response(
-                    self.thread_conversations[thread_id],
-                    user_context
-                )
-                
-                # Add bot response to history
-                self.thread_conversations[thread_id].append({
-                    'role': 'assistant',
-                    'content': response
-                })
+                response = gpt_handler.get_chat_response(messages, user_context)
                 
                 # Send response
                 await self.send_ai_response(message.channel, response)
@@ -262,14 +354,16 @@ class RefoldCoachingBot(commands.Bot):
             
             if response_text in ['yes', 'y', '✅', 'yes i do', 'i do'] or '✅' in message.content:
                 # User has app - ask for username
-                await thread.send("Great! What's your Refold app username?")
+                await thread.send("Great! What's your Refold app display name? *It's in the top left corner of the app OR the name that appears whenever you submit an action*.")
                 self.ongoing_conversations[user_id] = 'waiting_for_username'
+                self.ongoing_conversations[f"{user_id}_has_app"] = True
             elif response_text in ['no', 'n', '❌', 'no i don\'t', 'i don\'t'] or '❌' in message.content:
                 # User doesn't have app - send link
                 await thread.send(
                     "No problem! Please go to https://refold.link/webapp to set up an account and username, then come back and give me your username."
                 )
                 self.ongoing_conversations[user_id] = 'waiting_for_username'
+                self.ongoing_conversations[f"{user_id}_has_app"] = False
             else:
                 # Unclear response - ask again with reactions
                 app_question = await thread.send("Do you already use the Refold app (either on mobile or the web version)?")
@@ -277,12 +371,20 @@ class RefoldCoachingBot(commands.Bot):
                 await app_question.add_reaction('❌')
         
         elif conversation_state == 'waiting_for_username':
-            # User provided username - verify it
+            # User provided username - check if they have app to decide verification
             app_username = message.content.strip()
             # Store for later use
             self.ongoing_conversations[f"{user_id}_entered_username"] = app_username
             
-            # Search for matching username in activity feed
+            # Check if user has app - if not, skip verification
+            has_app = self.ongoing_conversations.get(f"{user_id}_has_app", True)  # Default to True for safety
+            
+            if not has_app:
+                # User doesn't have app - skip verification and accept username
+                await self._complete_registration(user_id, thread, app_username)
+                return
+            
+            # User has app - verify against activity feed
             try:
                 matched_username = await attendance_tracker.find_matching_username(thread, app_username)
                 
@@ -307,6 +409,7 @@ class RefoldCoachingBot(commands.Bot):
                     
                     self.ongoing_conversations[user_id] = 'waiting_for_username_confirmation'
                     self.ongoing_conversations[f"{user_id}_suggested_username"] = None
+                    return  # Prevent fallback AI response
                     
             except Exception as e:
                 print(f"Error verifying username: {e}")
@@ -328,7 +431,7 @@ class RefoldCoachingBot(commands.Bot):
                     await self._complete_registration(user_id, thread, original_username)
             elif response in ['no', 'n', 'try again']:
                 # Ask for a different username
-                await thread.send("No problem! What's your Refold app username?")
+                await thread.send("No problem! What's your Refold app display name? *It's in the top left corner of the app OR the name that appears whenever you submit an action*.")
                 self.ongoing_conversations[user_id] = 'waiting_for_username'
                 if f"{user_id}_suggested_username" in self.ongoing_conversations:
                     del self.ongoing_conversations[f"{user_id}_suggested_username"]
@@ -372,14 +475,28 @@ class RefoldCoachingBot(commands.Bot):
             # Grant role if configured
             if config.INTENSIVE_ROLE_ID:
                 try:
-                    guild = self.guilds[0]  # Assume first guild
-                    member = guild.get_member(user_id)
-                    if member:
-                        role = guild.get_role(config.INTENSIVE_ROLE_ID)
-                        if role:
+                    # Check all guilds for the role
+                    role = None
+                    correct_guild = None
+                    
+                    for guild in self.guilds:
+                        found_role = guild.get_role(config.INTENSIVE_ROLE_ID)
+                        if found_role:
+                            role = found_role
+                            correct_guild = guild
+                            break
+                    
+                    if role and correct_guild:
+                        member = correct_guild.get_member(user_id)
+                        if member:
                             await member.add_roles(role)
                             user_data['role_granted'] = True
                             data_manager.save_user(user_id, user_data)
+                            print(f"✅ Granted role '{role.name}' to {member.display_name}")
+                        else:
+                            print(f"❌ Member {user_id} not found in guild '{correct_guild.name}'")
+                    else:
+                        print(f"❌ Role with ID {config.INTENSIVE_ROLE_ID} not found in any guild")
                 except Exception as e:
                     print(f"Error granting role: {e}")
             
@@ -401,6 +518,102 @@ class RefoldCoachingBot(commands.Bot):
             if f"{user_id}_goals" in self.ongoing_conversations:
                 del self.ongoing_conversations[f"{user_id}_goals"]
     
+    async def _handle_goal_update_conversation(self, message):
+        """Handle goal update conversation in thread."""
+        user_id = message.author.id
+        thread_id = message.channel.id
+        thread = message.channel
+        
+        # Get conversation data
+        current_goals = self.ongoing_conversations.get(f"{user_id}_current_goals", "No goals set")
+        
+        # Add message to conversation history
+        if thread_id not in self.thread_conversations:
+            self.thread_conversations[thread_id] = []
+        
+        self.thread_conversations[thread_id].append({
+            'role': 'user',
+            'content': message.content
+        })
+        
+        # Check if user is providing new goals (look for goal-like content)
+        message_lower = message.content.lower()
+        goal_indicators = ['my goals are', 'i want to', 'my new goals', 'i will', 'i plan to']
+        
+        if any(indicator in message_lower for indicator in goal_indicators) or len(message.content) > 50:
+            # User seems to be providing new goals - validate them
+            try:
+                async with thread.typing():
+                    validation_result = gpt_handler.validate_updated_goals(message.content)
+                
+                if validation_result.get('is_valid', False):
+                    # Goals are valid - update user data
+                    user = data_manager.get_user(user_id)
+                    if user:
+                        # Save previous goals for history
+                        previous_goals = user.get('goals', 'No previous goals')
+                        
+                        # Update goals
+                        user['goals'] = message.content
+                        user['goals_updated_at'] = datetime.now().isoformat()
+                        
+                        # Add to goals history if it doesn't exist
+                        if 'goals_history' not in user:
+                            user['goals_history'] = []
+                        user['goals_history'].append({
+                            'previous_goals': previous_goals,
+                            'updated_at': datetime.now().isoformat(),
+                            'reason': 'User requested update'
+                        })
+                        
+                        data_manager.save_user(user_id, user)
+                        
+                        # Send confirmation
+                        await thread.send(
+                            f"Goals updated! ✅\n\n"
+                            f"Your new goals: **{message.content}**\n\n"
+                            f"I'll help you stay focused on these goals!"
+                        )
+                        
+                        # Clean up conversation state
+                        del self.ongoing_conversations[user_id]
+                        if f"{user_id}_thread_id" in self.ongoing_conversations:
+                            del self.ongoing_conversations[f"{user_id}_thread_id"]
+                        if f"{user_id}_current_goals" in self.ongoing_conversations:
+                            del self.ongoing_conversations[f"{user_id}_current_goals"]
+                        return
+                else:
+                    # Goals need improvement - provide feedback
+                    feedback = validation_result.get('feedback', 'Please make your goals more specific and achievable for the 2-week intensive.')
+                    async with thread.typing():
+                        await self.send_ai_response(thread, f"🤔 **Let's refine your goals:**\n\n{feedback}\n\nPlease revise your goals and try again!")
+                    return
+                    
+            except Exception as e:
+                print(f"Error validating goals: {e}")
+                await thread.send("❌ Sorry, I'm having trouble validating your goals right now. Please try again in a moment.")
+                return
+        
+        # Continue the conversation
+        try:
+            async with thread.typing():
+                response = gpt_handler.continue_goal_update_conversation(
+                    self.thread_conversations[thread_id], 
+                    current_goals
+                )
+                
+                # Add bot response to history
+                self.thread_conversations[thread_id].append({
+                    'role': 'assistant',
+                    'content': response
+                })
+                
+                # Send response
+                await self.send_ai_response(thread, response)
+        except Exception as e:
+            print(f"Error continuing goal update conversation: {e}")
+            await thread.send("❌ Sorry, I'm having trouble responding right now. Please try again in a moment.")
+    
     async def _handle_intensive_join_message(self, message):
         """Handle messages in the intensive join channel to start onboarding."""
         user_id = message.author.id
@@ -417,14 +630,14 @@ class RefoldCoachingBot(commands.Bot):
         
         # Initialize conversation state
         self.ongoing_conversations[user_id] = 'waiting_for_goals'
-        self.thread_conversations[thread.id] = []
         
         # Send welcome message with disclaimer
         async with thread.typing():
             welcome_message = (
                 "Welcome to the Refold Intensive! 🎉\n\n"
-                "I'm your Coach Bot, and I'm here to help you stay motivated and on track.\n\n"
-                "**What are your goals for this intensive?** Please be specific about what you want to achieve in the next 2 weeks."
+                "I'm your Coach Bot, and I'm here to help you stay motivated and on track. We're all super glad you're part of this Refold intensive! I'm still in testing, so if anything I say sounds like nonsese, please tell one of the real coaches, Ben or Clayton.\n\n"
+                "If you want more information about this intensive (or you joined by clicking into this channel in the Discord), check out our [webapp](<https://refold.link/webapp>)! There you'll see all the important information for the intensive (like what it is, what to do and what events are coming up).\n\n"
+                "Now, it's important to have a plan! **What are your goals for this intensive?** Please be specific about what you want to achieve in the next 2 weeks. I'll keep track of them and help you stay accountable."
             )
             await thread.send(welcome_message)
             
@@ -523,7 +736,7 @@ class RefoldCoachingBot(commands.Bot):
                             await member.send(
                                 "Hi! 👋 I noticed I don't have your Refold app username on file, so I can't track your progress properly.\n\n"
                                 "Sorry about this - the systems aren't super connected yet! 😅\n\n"
-                                "Could you tell me your Refold app username? You can find this in the app:\n"
+                                "Could you tell me your Refold app display name? *It's in the top left corner of the app OR the name that appears whenever you submit an action*. You can find this in the app:\n"
                                 "1. Go to your account\n"
                                 "2. Look at the **Display name** field\n"
                                 "3. Tell me exactly what it says\n\n"
@@ -576,6 +789,68 @@ class RefoldCoachingBot(commands.Bot):
         except Exception as e:
             print(f"Error in reachout check: {e}")
     
+    @tasks.loop(seconds=86400)  # 24 hours
+    async def username_verification_check(self):
+        """Check for users with 0 activity and send username verification reachout."""
+        try:
+            users = data_manager.get_all_users()
+            
+            for discord_id_str, user in users.items():
+                discord_id = int(discord_id_str)
+                
+                # Check if user has 0 minutes of activity
+                activity_tracking = user.get('activity_tracking', {})
+                total_minutes = activity_tracking.get('total_minutes', 0)
+                
+                if total_minutes == 0:
+                    # Check if we've already sent verification reachout
+                    if data_manager.has_username_verification_been_sent(discord_id):
+                        continue
+                    
+                    # Check if user has an app username
+                    app_username = user.get('app_username')
+                    if not app_username:
+                        continue
+                    
+                    try:
+                        # Get Discord user
+                        member = self.get_user(discord_id)
+                        if not member:
+                            continue
+                        
+                        # Send verification reachout
+                        verification_msg = await member.send(
+                            f"Hey! Your username **{app_username}** hasn't logged any actions in the last 24 hours and I'm worried I have it saved wrong. "
+                            "Have you tracked any learning time in the last 24 hours?"
+                        )
+                        
+                        # Add reactions
+                        await verification_msg.add_reaction('✅')
+                        await verification_msg.add_reaction('❌')
+                        
+                        # Set conversation state for handling response
+                        self.ongoing_conversations[discord_id] = 'username_verification_response'
+                        self.ongoing_conversations[f"{discord_id}_verification_msg_id"] = verification_msg.id
+                        
+                        # Mark as sent
+                        data_manager.mark_username_verification_sent(discord_id)
+                        
+                        # Log reachout
+                        data_manager.add_reachout_conversation(
+                            discord_id,
+                            'username_verification',
+                            f'Sent username verification reachout for {app_username}',
+                            'Awaiting response'
+                        )
+                        
+                        print(f"Sent username verification reachout to {member.display_name} ({app_username})")
+                        
+                    except Exception as e:
+                        print(f"Error sending username verification to {discord_id}: {e}")
+                        
+        except Exception as e:
+            print(f"Error in username verification check: {e}")
+    
     async def _handle_dm_message(self, message):
         """Handle DM messages for onboarding and conversations."""
         user_id = message.author.id
@@ -590,8 +865,9 @@ class RefoldCoachingBot(commands.Bot):
             
             await message.channel.send(
                 "Great goals! 🎯\n\n"
-                "Now, what's your Refold app username? This helps me track your progress in the app."
+                "Now, what's your Refold app display name? *It's in the top left corner of the app OR the name that appears whenever you submit an action*. This helps me track your progress in the app."
             )
+            return  # Prevent fallback AI response
         
         elif conversation_state == 'waiting_for_app_username':
             # User provided app username, complete registration
@@ -629,14 +905,28 @@ class RefoldCoachingBot(commands.Bot):
             # Grant role if configured
             if config.INTENSIVE_ROLE_ID:
                 try:
-                    guild = self.guilds[0]  # Assume first guild
-                    member = guild.get_member(user_id)
-                    if member:
-                        role = guild.get_role(config.INTENSIVE_ROLE_ID)
-                        if role:
+                    # Check all guilds for the role
+                    role = None
+                    correct_guild = None
+                    
+                    for guild in self.guilds:
+                        found_role = guild.get_role(config.INTENSIVE_ROLE_ID)
+                        if found_role:
+                            role = found_role
+                            correct_guild = guild
+                            break
+                    
+                    if role and correct_guild:
+                        member = correct_guild.get_member(user_id)
+                        if member:
                             await member.add_roles(role)
                             user_data['role_granted'] = True
                             data_manager.save_user(user_id, user_data)
+                            print(f"✅ Granted role '{role.name}' to {member.display_name}")
+                        else:
+                            print(f"❌ Member {user_id} not found in guild '{correct_guild.name}'")
+                    else:
+                        print(f"❌ Role with ID {config.INTENSIVE_ROLE_ID} not found in any guild")
                 except Exception as e:
                     print(f"Error granting role: {e}")
             
@@ -654,21 +944,12 @@ class RefoldCoachingBot(commands.Bot):
             del self.ongoing_conversations[user_id]
             if f"{user_id}_goals" in self.ongoing_conversations:
                 del self.ongoing_conversations[f"{user_id}_goals"]
+            return  # Prevent fallback AI response
         
-        elif conversation_state == 'updating_goals':
-            # Update goals
-            user = data_manager.get_user(user_id)
-            if user:
-                user['goals'] = message.content
-                data_manager.save_user(user_id, user)
-                
-                await message.channel.send(
-                    f"Goals updated! ✅\n\n"
-                    f"Your new goals: **{message.content}**\n\n"
-                    f"I'll help you stay focused on these goals!"
-                )
-            
-            del self.ongoing_conversations[user_id]
+        elif conversation_state == 'updating_goals_conversation':
+            # Handle goal update conversation in DM
+            await self._handle_goal_update_conversation(message)
+            return
         
         elif conversation_state == 'updating_username':
             # User provided their username
@@ -686,41 +967,219 @@ class RefoldCoachingBot(commands.Bot):
                 
                 # Clean up conversation state
                 del self.ongoing_conversations[user_id]
+                return  # Prevent fallback AI response
+        
+        elif conversation_state == 'waiting_for_username':
+            # User provided username - check if they have app to decide verification
+            app_username = message.content.strip()
+            # Store for later use
+            self.ongoing_conversations[f"{user_id}_entered_username"] = app_username
+            
+            # Check if user has app - if not, skip verification
+            has_app = self.ongoing_conversations.get(f"{user_id}_has_app", True)  # Default to True for safety
+            
+            if not has_app:
+                # User doesn't have app - skip verification and update existing user profile
+                user = data_manager.get_user(user_id)
+                if user:
+                    user['app_username'] = app_username
+                    data_manager.save_user(user_id, user)
+                    await message.channel.send(
+                        f"Perfect! ✅ I've saved **{app_username}** as your Refold app username.\n\n"
+                        "Now I can track your progress properly. Keep up the great work!"
+                    )
+                # Clean up conversation state
+                del self.ongoing_conversations[user_id]
+                if f"{user_id}_has_app" in self.ongoing_conversations:
+                    del self.ongoing_conversations[f"{user_id}_has_app"]
+                return  # Prevent fallback AI response
+            
+            # User has app - verify against activity feed
+            try:
+                matched_username = await attendance_tracker.find_matching_username(message.channel, app_username)
+                
+                if matched_username:
+                    if matched_username.lower() == app_username.lower():
+                        # Exact match - update user profile
+                        user = data_manager.get_user(user_id)
+                        if user:
+                            user['app_username'] = app_username
+                            data_manager.save_user(user_id, user)
+                            await message.channel.send(
+                                f"Perfect! ✅ I found your username **{app_username}** in the activity feed.\n\n"
+                                "Now I can track your progress properly. Keep up the great work!"
+                            )
+                        # Clean up conversation state
+                        del self.ongoing_conversations[user_id]
+                        if f"{user_id}_has_app" in self.ongoing_conversations:
+                            del self.ongoing_conversations[f"{user_id}_has_app"]
+                        return  # Prevent fallback AI response
+                    else:
+                        # Partial match - ask for confirmation
+                        await message.channel.send(f"Did you mean **{matched_username}**? (Type 'yes' to confirm or 'no' to try a different username)")
+                        self.ongoing_conversations[user_id] = 'waiting_for_username_confirmation'
+                        self.ongoing_conversations[f"{user_id}_suggested_username"] = matched_username
+                        return  # Prevent fallback AI response
+                else:
+                    # No match found - explain limitation and offer options
+                    not_found_msg = await message.channel.send(
+                        f"I couldn't find any recent actions by **{app_username}** in the activity feed (I can only see back about 1-2 days). "
+                        "Are you sure that's your display name?\n\n"
+                        "React with ✅ to use this username anyway, or ❌ to try a different username."
+                    )
+                    await not_found_msg.add_reaction('✅')
+                    await not_found_msg.add_reaction('❌')
+                    
+                    self.ongoing_conversations[user_id] = 'waiting_for_username_confirmation'
+                    self.ongoing_conversations[f"{user_id}_suggested_username"] = None
+                    return  # Prevent fallback AI response
+                    
+            except Exception as e:
+                print(f"Error verifying username: {e}")
+                # If verification fails, just update the username
+                user = data_manager.get_user(user_id)
+                if user:
+                    user['app_username'] = app_username
+                    data_manager.save_user(user_id, user)
+                    await message.channel.send(
+                        f"Perfect! ✅ I've saved **{app_username}** as your Refold app username.\n\n"
+                        "Now I can track your progress properly. Keep up the great work!"
+                    )
+                # Clean up conversation state
+                del self.ongoing_conversations[user_id]
+                if f"{user_id}_has_app" in self.ongoing_conversations:
+                    del self.ongoing_conversations[f"{user_id}_has_app"]
+                return  # Prevent fallback AI response
+        
+        elif conversation_state == 'waiting_for_username_confirmation':
+            # User is confirming or rejecting suggested username
+            response = message.content.lower().strip()
+            suggested_username = self.ongoing_conversations.get(f"{user_id}_suggested_username")
+            
+            if response in ['yes', 'y', 'confirm']:
+                if suggested_username:
+                    # Use the suggested username
+                    user = data_manager.get_user(user_id)
+                    if user:
+                        user['app_username'] = suggested_username
+                        data_manager.save_user(user_id, user)
+                        await message.channel.send(
+                            f"Perfect! ✅ I've saved **{suggested_username}** as your Refold app username.\n\n"
+                            "Now I can track your progress properly. Keep up the great work!"
+                        )
+                else:
+                    # Use the original username
+                    original_username = self.ongoing_conversations.get(f"{user_id}_entered_username", "")
+                    if original_username:
+                        user = data_manager.get_user(user_id)
+                        if user:
+                            user['app_username'] = original_username
+                            data_manager.save_user(user_id, user)
+                            await message.channel.send(
+                                f"Perfect! ✅ I've saved **{original_username}** as your Refold app username.\n\n"
+                                "Now I can track your progress properly. Keep up the great work!"
+                            )
+                # Clean up conversation state
+                del self.ongoing_conversations[user_id]
+                if f"{user_id}_has_app" in self.ongoing_conversations:
+                    del self.ongoing_conversations[f"{user_id}_has_app"]
+                if f"{user_id}_suggested_username" in self.ongoing_conversations:
+                    del self.ongoing_conversations[f"{user_id}_suggested_username"]
+                return  # Prevent fallback AI response
+            elif response in ['no', 'n', 'try again']:
+                # Ask for a different username
+                await message.channel.send("No problem! What's your Refold app display name? *It's in the top left corner of the app OR the name that appears whenever you submit an action*.")
+                self.ongoing_conversations[user_id] = 'waiting_for_username'
+                if f"{user_id}_suggested_username" in self.ongoing_conversations:
+                    del self.ongoing_conversations[f"{user_id}_suggested_username"]
+                return  # Prevent fallback AI response
+            else:
+                # Unclear response - ask again
+                await message.channel.send("Please type 'yes' to confirm or 'no' to try a different username.")
+                return  # Prevent fallback AI response
+        
+        elif conversation_state == 'username_verification_response':
+            # Handle username verification reachout response (text-based)
+            response_text = message.content.lower().strip()
+            
+            if response_text in ['yes', 'y', 'yeah', 'yep', 'sure']:
+                # User says they have tracked time - ask for username again
+                await message.channel.send(
+                    "Great! It sounds like I might have your username wrong. What's your Refold app display name? *It's in the top left corner of the app OR the name that appears whenever you submit an action*. "
+                    "I'll search for it in the activity feed to make sure I have it right."
+                )
+                self.ongoing_conversations[user_id] = 'waiting_for_username'
+                self.ongoing_conversations[f"{user_id}_has_app"] = True  # They have app since they tracked time
+            elif response_text in ['no', 'n', 'nope', 'not yet', 'haven\'t']:
+                # User says they haven't tracked time - send instructions
+                await message.channel.send(
+                    "No worries! Here's how to start tracking your study time:\n\n"
+                    "Visit https://refold.link/tracker and start tracking your study time! "
+                    "Enter a task name (include the emoji 👂 to make it part of the listening intensive), "
+                    "then select what kind of language learning you're doing and hit start! "
+                    "When you're done, click save and I'll see it. You got this!"
+                )
+                # Clean up conversation state
+                del self.ongoing_conversations[user_id]
+                if f"{user_id}_verification_msg_id" in self.ongoing_conversations:
+                    del self.ongoing_conversations[f"{user_id}_verification_msg_id"]
+            else:
+                # Unclear response - ask for clarification
+                await message.channel.send(
+                    "I'm not sure what you mean. Did you track any learning time in the last 24 hours? "
+                    "Please answer 'yes' or 'no'."
+                )
+            return  # Prevent fallback AI response
         
         else:
             # Regular DM conversation
-            user = data_manager.get_user(user_id)
-            user_context = {
-                'goals': user.get('goals', 'No goals set') if user else 'No goals set',
-                'app_username': user.get('app_username', 'Not provided') if user else 'Not provided'
-            }
+            user_context = self._build_user_context(user_id)
             
             # Send reminder for first-time users
+            user = data_manager.get_user(user_id)
             if not user:
                 await message.channel.send("💬 **Note:** Coaches can see this conversation to help provide better support.")
             
-        # Generate response with typing indicator
-        try:
-            async with message.channel.typing():
-                messages = [{'role': 'user', 'content': message.content}]
-                response = gpt_handler.get_chat_response(messages, user_context)
-                
-                # Send response
-                await self.send_ai_response(message.channel, response)
-        except Exception as e:
-            print(f"Error generating DM response: {e}")
-            await message.channel.send("❌ Sorry, I'm having trouble responding right now. Please try again in a moment.")
+            # Fetch conversation history from last hour (up to 10 messages)
+            one_hour_ago = datetime.now() - timedelta(hours=1)
+            messages = []
+            async for msg in message.channel.history(after=one_hour_ago, limit=10):
+                # Skip empty messages or bot messages that are just disclaimers or error messages
+                if not msg.content or (msg.author == self.user and (msg.content.startswith("-#") or "❌" in msg.content)):
+                    continue
+                # Proper role attribution: user messages vs bot messages
+                role = "user" if msg.author != self.user else "assistant"
+                messages.insert(0, {"role": role, "content": msg.content})
             
-            # Save conversation summary periodically
-            if user and len(user.get('conversation_summaries', [])) % 5 == 0:
-                summary_data = gpt_handler.summarize_conversation(messages)
-                data_manager.add_conversation_summary(
-                    user_id,
-                    'dm',
-                    summary_data['summary'],
-                    summary_data['key_topics'],
-                    summary_data['sentiment']
-                )
+            # Ensure we have at least the current message if history is empty
+            if not messages and message.content:
+                messages = [{"role": "user", "content": message.content}]
+            
+            # Skip processing if no valid messages
+            if not messages:
+                return
+            
+            # Generate response with typing indicator
+            try:
+                async with message.channel.typing():
+                    response = gpt_handler.get_chat_response(messages, user_context)
+                    
+                    # Send response
+                    await self.send_ai_response(message.channel, response)
+            except Exception as e:
+                print(f"Error generating DM response: {e}")
+                await message.channel.send("❌ Sorry, I'm having trouble responding right now. Please try again in a moment.")
+                
+                # Save conversation summary periodically
+                if user and len(user.get('conversation_summaries', [])) % 5 == 0:
+                    summary_data = gpt_handler.summarize_conversation(messages)
+                    data_manager.add_conversation_summary(
+                        user_id,
+                        'dm',
+                        summary_data['summary'],
+                        summary_data['key_topics'],
+                        summary_data['sentiment']
+                    )
     
     async def _handle_other_messages(self, message):
         """Handle other message types (bot chat, activity feed, etc.)."""
@@ -754,14 +1213,16 @@ class RefoldCoachingBot(commands.Bot):
             # Handle app usage confirmation
             if str(reaction.emoji) == '✅':
                 # User has app - ask for username
-                await reaction.message.channel.send("Great! What's your Refold app username?")
+                await reaction.message.channel.send("Great! What's your Refold app display name? *It's in the top left corner of the app OR the name that appears whenever you submit an action*.")
                 self.ongoing_conversations[user_id] = 'waiting_for_username'
+                self.ongoing_conversations[f"{user_id}_has_app"] = True
             elif str(reaction.emoji) == '❌':
                 # User doesn't have app - send link
                 await reaction.message.channel.send(
                     "No problem! Please go to https://refold.link/webapp to set up an account and username, then come back and give me your username."
                 )
                 self.ongoing_conversations[user_id] = 'waiting_for_username'
+                self.ongoing_conversations[f"{user_id}_has_app"] = False
         
         elif conversation_state == 'waiting_for_username_confirmation':
             # Handle username confirmation
@@ -772,10 +1233,34 @@ class RefoldCoachingBot(commands.Bot):
                     await self._complete_registration(user_id, reaction.message.channel, original_username)
             elif str(reaction.emoji) == '❌':
                 # User wants to try different username
-                await reaction.message.channel.send("No problem! What's your Refold app username?")
+                await reaction.message.channel.send("No problem! What's your Refold app display name? *It's in the top left corner of the app OR the name that appears whenever you submit an action*.")
                 self.ongoing_conversations[user_id] = 'waiting_for_username'
                 if f"{user_id}_suggested_username" in self.ongoing_conversations:
                     del self.ongoing_conversations[f"{user_id}_suggested_username"]
+        
+        elif conversation_state == 'username_verification_response':
+            # Handle username verification reachout response
+            if str(reaction.emoji) == '✅':
+                # User says they have tracked time - ask for username again
+                await reaction.message.channel.send(
+                    "Great! It sounds like I might have your username wrong. What's your Refold app display name? *It's in the top left corner of the app OR the name that appears whenever you submit an action*. "
+                    "I'll search for it in the activity feed to make sure I have it right."
+                )
+                self.ongoing_conversations[user_id] = 'waiting_for_username'
+                self.ongoing_conversations[f"{user_id}_has_app"] = True  # They have app since they tracked time
+            elif str(reaction.emoji) == '❌':
+                # User says they haven't tracked time - send instructions
+                await reaction.message.channel.send(
+                    "No worries! Here's how to start tracking your study time:\n\n"
+                    "Visit https://refold.link/tracker and start tracking your study time! "
+                    "Enter a task name (include the emoji 👂 to make it part of the listening intensive), "
+                    "then select what kind of language learning you're doing and hit start! "
+                    "When you're done, click save and I'll see it. You got this!"
+                )
+                # Clean up conversation state
+                del self.ongoing_conversations[user_id]
+                if f"{user_id}_verification_msg_id" in self.ongoing_conversations:
+                    del self.ongoing_conversations[f"{user_id}_verification_msg_id"]
 
     async def send_ai_response(self, channel, message_content: str):
         """Sends an AI-generated response with the disclaimer, splitting long messages if needed."""
@@ -825,14 +1310,31 @@ class RefoldCoachingBot(commands.Bot):
         # Grant role if configured
         if config.INTENSIVE_ROLE_ID:
             try:
-                guild = self.guilds[0]  # Assume first guild
-                member = guild.get_member(user_id)
-                if member:
-                    role = guild.get_role(config.INTENSIVE_ROLE_ID)
-                    if role:
+                # Check all guilds for the role
+                role = None
+                correct_guild = None
+                
+                for guild in self.guilds:
+                    found_role = guild.get_role(config.INTENSIVE_ROLE_ID)
+                    if found_role:
+                        role = found_role
+                        correct_guild = guild
+                        break
+                
+                if role and correct_guild:
+                    member = correct_guild.get_member(user_id)
+                    if member:
                         await member.add_roles(role)
-                        user['role_granted'] = True
-                        data_manager.save_user(user_id, user)
+                        # Re-fetch user to ensure we have latest data
+                        user = data_manager.get_user(user_id)
+                        if user:
+                            user['role_granted'] = True
+                            data_manager.save_user(user_id, user)
+                        print(f"✅ Granted role '{role.name}' to {member.display_name}")
+                    else:
+                        print(f"❌ Member {user_id} not found in guild '{correct_guild.name}'")
+                else:
+                    print(f"❌ Role with ID {config.INTENSIVE_ROLE_ID} not found in any guild")
             except Exception as e:
                 print(f"Error granting role: {e}")
         
@@ -883,6 +1385,40 @@ class RefoldCoachingBot(commands.Bot):
         if not config.COACH_ROLE_ID:
             return user.guild_permissions.administrator
         return any(role.id == config.COACH_ROLE_ID for role in user.roles)
+    
+    def _build_user_context(self, user_id: int) -> Dict[str, Any]:
+        """Build comprehensive user context with rankings."""
+        user = data_manager.get_user(user_id)
+        if not user:
+            return {
+                'goals': 'No goals set',
+                'app_username': 'Not provided',
+                'total_minutes': 0,
+                'minutes_rank': 'N/A',
+                'conversation_count': 0,
+                'conversation_rank': 'N/A',
+                'reachout_count': 0,
+                'reachout_rank': 'N/A',
+                'total_users': 0
+            }
+        
+        rankings = data_manager.get_user_rankings(user_id)
+        activity_tracking = user.get('activity_tracking', {})
+        reachouts = user.get('reachouts', {})
+        conversation_summaries = user.get('conversation_summaries', [])
+        
+        return {
+            'goals': user.get('goals', 'No goals set'),
+            'app_username': user.get('app_username', 'Not provided'),
+            'total_minutes': activity_tracking.get('total_minutes', 0),
+            'minutes_rank': rankings.get('total_minutes_rank', 'N/A'),
+            'conversation_count': len(conversation_summaries),
+            'conversation_rank': rankings.get('conversations_rank', 'N/A'),
+            'reachout_count': reachouts.get('total_reachouts', 0),
+            'reachout_rank': rankings.get('reachouts_rank', 'N/A'),
+            'total_users': rankings.get('total_users', 0)
+        }
+    
     
     async def _send_reachout(self, user_id: int, user: discord.Member):
         """Send a reachout message to a user."""
@@ -936,10 +1472,20 @@ async def update_goals(ctx):
         await ctx.send("❌ You're not registered for the intensive. Please join first!")
         return
     
-    # Start goal update conversation
+    # Create thread for goal update conversation
+    thread_name = f"Goal Update - {ctx.author.display_name}"
+    thread = await ctx.message.create_thread(name=thread_name, auto_archive_duration=60)
+    
+    # Get current goals
+    current_goals = user.get('goals', 'No goals set')
+    
+    # Start simple goal update conversation
     bot = ctx.bot
-    bot.ongoing_conversations[user_id] = 'updating_goals'
-    await ctx.send("What are your new goals for the intensive?")
+    bot.ongoing_conversations[user_id] = 'updating_goals_simple'
+    bot.ongoing_conversations[f"{user_id}_current_goals"] = current_goals
+    
+    # Send simple message
+    await thread.send(f"Your current goals: **{current_goals}**\n\nWhat would you like to change them to?")
 
 @commands.command(name='user_info', help='Get user information (coaches only)')
 async def user_info(ctx, member: discord.Member = None):

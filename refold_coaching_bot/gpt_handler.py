@@ -162,15 +162,36 @@ class GPTHandler:
         if user_context:
             goals = user_context.get('goals', 'No specific goals set')
             app_username = user_context.get('app_username', 'Not provided')
+            total_minutes = user_context.get('total_minutes', 0)
+            minutes_rank = user_context.get('minutes_rank', 'N/A')
+            conversation_count = user_context.get('conversation_count', 0)
+            conversation_rank = user_context.get('conversation_rank', 'N/A')
+            reachout_count = user_context.get('reachout_count', 0)
+            reachout_rank = user_context.get('reachout_rank', 'N/A')
+            total_users = user_context.get('total_users', 0)
             
             prompt, _ = self.load_prompt('coach_bot_system.txt', 
                                   user_goals=goals, 
-                                  app_username=app_username)
+                                  app_username=app_username,
+                                  total_minutes=total_minutes,
+                                  minutes_rank=minutes_rank,
+                                  conversation_count=conversation_count,
+                                  conversation_rank=conversation_rank,
+                                  reachout_count=reachout_count,
+                                  reachout_rank=reachout_rank,
+                                  total_users=total_users)
             return prompt
         else:
             prompt, _ = self.load_prompt('coach_bot_system.txt', 
                                   user_goals='No goals set', 
-                                  app_username='Not provided')
+                                  app_username='Not provided',
+                                  total_minutes=0,
+                                  minutes_rank='N/A',
+                                  conversation_count=0,
+                                  conversation_rank='N/A',
+                                  reachout_count=0,
+                                  reachout_rank='N/A',
+                                  total_users=0)
             return prompt
     
     def load_prompt(self, filename: str, **variables) -> tuple[str, str]:
@@ -359,6 +380,67 @@ class GPTHandler:
                 f"I noticed you haven't been very active lately. Your goals are: {goals}\n\n"
                 f"How are you doing with your intensive? Is there anything I can help you with?"
             )
+    
+    def start_goal_update_conversation(self, current_goals: str) -> str:
+        """Start a conversational goal update process."""
+        try:
+            prompt, model = self.load_prompt('goal_update_conversation.txt', 
+                                    current_goals=current_goals,
+                                    conversation_context="initial")
+            
+            # Use the same format as other working methods
+            response = self.client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                max_completion_tokens=400
+            )
+            
+            if response.choices and response.choices[0].message:
+                content = response.choices[0].message.content
+                if not content or content.strip() == "" or content.strip() == "...":
+                    return f"Your current goals: **{current_goals}**\n\nWhat's prompting you to update them?"
+                return content
+            else:
+                return f"Your current goals: **{current_goals}**\n\nWhat's prompting you to update them?"
+                
+        except Exception as e:
+            print(f"Error starting goal update conversation: {e}")
+            return f"Your current goals: **{current_goals}**\n\nWhat's prompting you to update them?"
+    
+    def continue_goal_update_conversation(self, messages: List[Dict[str, str]], current_goals: str) -> str:
+        """Continue the goal update conversation."""
+        try:
+            # Build conversation context
+            conversation_context = "\n".join([
+                f"{msg['role']}: {msg['content']}" for msg in messages[-5:]  # Last 5 messages for context
+            ])
+            
+            prompt, model = self.load_prompt('goal_update_conversation.txt', 
+                                    current_goals=current_goals,
+                                    conversation_context=conversation_context)
+            
+            # Use the same format as other working methods
+            response = self.client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                max_completion_tokens=400
+            )
+            
+            if response.choices and response.choices[0].message:
+                content = response.choices[0].message.content
+                if not content or content.strip() == "" or content.strip() == "...":
+                    return "I'm here to help you refine your goals. What would you like to focus on?"
+                return content
+            else:
+                return "I'm here to help you refine your goals. What would you like to focus on?"
+                
+        except Exception as e:
+            print(f"Error continuing goal update conversation: {e}")
+            return "I'm here to help you refine your goals. What would you like to focus on?"
+    
+    def validate_updated_goals(self, new_goals: str) -> Dict[str, Any]:
+        """Validate updated goals using existing SMART goals validation."""
+        return self.validate_smart_goals(new_goals)
 
 
 # Global GPT handler instance

@@ -128,7 +128,8 @@ class DataManager:
             user['reachouts'] = {
                 'last_reachout': None,
                 'total_reachouts': 0,
-                'conversations': []
+                'conversations': [],
+                'username_verification_sent': False
             }
         
         conversation = {
@@ -143,6 +144,32 @@ class DataManager:
         user['reachouts']['last_reachout'] = datetime.now().isoformat()
         
         self.save_user(discord_id, user)
+    
+    def mark_username_verification_sent(self, discord_id: int):
+        """Mark that username verification reachout has been sent to user."""
+        user = self.get_user(discord_id)
+        if not user:
+            return
+        
+        if 'reachouts' not in user:
+            user['reachouts'] = {
+                'last_reachout': None,
+                'total_reachouts': 0,
+                'conversations': [],
+                'username_verification_sent': False
+            }
+        
+        user['reachouts']['username_verification_sent'] = True
+        self.save_user(discord_id, user)
+    
+    def has_username_verification_been_sent(self, discord_id: int) -> bool:
+        """Check if username verification reachout has been sent to user."""
+        user = self.get_user(discord_id)
+        if not user:
+            return False
+        
+        reachouts = user.get('reachouts', {})
+        return reachouts.get('username_verification_sent', False)
     
     def update_activity_tracking(self, discord_id: int, minutes: int, activity: str):
         """Update user's activity tracking from app feed."""
@@ -288,6 +315,68 @@ class DataManager:
         except Exception as e:
             print(f"Error removing user {discord_id}: {e}")
             return False
+    
+    def get_user_rankings(self, discord_id: int) -> Dict[str, Any]:
+        """Get user rankings compared to all other users."""
+        try:
+            users = self.get_all_users()
+            if not users:
+                return {
+                    'total_minutes_rank': 'N/A',
+                    'conversations_rank': 'N/A',
+                    'reachouts_rank': 'N/A',
+                    'total_users': 0
+                }
+            
+            # Get current user data
+            current_user = users.get(str(discord_id))
+            if not current_user:
+                return {
+                    'total_minutes_rank': 'N/A',
+                    'conversations_rank': 'N/A',
+                    'reachouts_rank': 'N/A',
+                    'total_users': len(users)
+                }
+            
+            # Collect all user stats for ranking
+            user_stats = []
+            for user_id, user_data in users.items():
+                activity_tracking = user_data.get('activity_tracking', {})
+                reachouts = user_data.get('reachouts', {})
+                conversation_summaries = user_data.get('conversation_summaries', [])
+                
+                user_stats.append({
+                    'user_id': user_id,
+                    'total_minutes': activity_tracking.get('total_minutes', 0),
+                    'conversations': len(conversation_summaries),
+                    'reachouts': reachouts.get('total_reachouts', 0)
+                })
+            
+            # Sort by each metric
+            user_stats.sort(key=lambda x: x['total_minutes'], reverse=True)
+            total_minutes_rank = next((i + 1 for i, user in enumerate(user_stats) if user['user_id'] == str(discord_id)), len(user_stats))
+            
+            user_stats.sort(key=lambda x: x['conversations'], reverse=True)
+            conversations_rank = next((i + 1 for i, user in enumerate(user_stats) if user['user_id'] == str(discord_id)), len(user_stats))
+            
+            user_stats.sort(key=lambda x: x['reachouts'], reverse=True)
+            reachouts_rank = next((i + 1 for i, user in enumerate(user_stats) if user['user_id'] == str(discord_id)), len(user_stats))
+            
+            return {
+                'total_minutes_rank': total_minutes_rank,
+                'conversations_rank': conversations_rank,
+                'reachouts_rank': reachouts_rank,
+                'total_users': len(users)
+            }
+            
+        except Exception as e:
+            print(f"Error calculating user rankings: {e}")
+            return {
+                'total_minutes_rank': 'N/A',
+                'conversations_rank': 'N/A',
+                'reachouts_rank': 'N/A',
+                'total_users': 0
+            }
 
 
 # Global data manager instance

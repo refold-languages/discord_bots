@@ -1,32 +1,19 @@
 {
-  "288075451463761920": {
-    "discord_username": "Ben",
-    "app_username": "Mycheze",
-    "goals": "I want to listen to 5 episodes of a podcast this week",
-    "joined_at": "2025-10-22T16:34:57.118049",
-    "role_granted": false,
+  "1325161141550317668": {
+    "discord_username": "a_lua_clara",
+    "app_username": "GP",
+    "goals": "Improve listening",
+    "joined_at": "2025-10-24T16:22:29.324764",
+    "role_granted": true,
     "attendance": {
-      "total_messages": 2,
-      "messages_per_day": {
-        "2025-10-22": 2
-      },
-      "voice_joins": 1,
-      "last_active": "2025-10-22T16:37:11.759614"
+      "total_messages": 0,
+      "messages_per_day": {},
+      "voice_joins": 0,
+      "last_active": null
     },
     "activity_tracking": {
-      "total_minutes": 6,
-      "activities": [
-        {
-          "timestamp": "2025-10-22T16:36:17.337962",
-          "activity": "Vocab Study (Gggg)",
-          "minutes": 5
-        },
-        {
-          "timestamp": "2025-10-22T16:38:11.717466",
-          "activity": "Interactive Reading w/ Audio (Hi)",
-          "minutes": 1
-        }
-      ]
+      "total_minutes": 0,
+      "activities": []
     },
     "reachouts": {
       "last_reachout": null,
@@ -36,7 +23,7 @@
     "conversation_summaries": [],
     "onboarding": {
       "status": "completed",
-      "last_updated": "2025-10-22T16:35:47.859286"
+      "last_updated": "2025-10-24T16:22:37.855886"
     }
   }
 }
