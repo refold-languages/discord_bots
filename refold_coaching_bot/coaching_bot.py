@@ -75,6 +75,46 @@ class RefoldCoachingBot(commands.Bot):
         # Handle commands first
         await self.process_commands(message)
         
+        # CRITICAL: Only respond in authorized channels
+        # Check if this is an allowed channel or DM
+        allowed_channels = [
+            config.INTENSIVE_JOIN_CHANNEL_ID,
+            config.BOT_CHAT_CHANNEL_ID, 
+            config.ACTIVITY_FEED_CHANNEL_ID
+        ]
+        
+        # Also allow coach channel for commands (but not regular message processing)
+        if config.COACH_CHANNEL_ID and message.channel.id == config.COACH_CHANNEL_ID:
+            # Coach channel is allowed for commands, but we'll handle it separately
+            # to avoid regular message processing
+            return
+        
+        # Allow DMs and threads, but check threads are from allowed channels
+        is_dm = isinstance(message.channel, discord.DMChannel)
+        is_thread = isinstance(message.channel, discord.Thread)
+        is_allowed_channel = message.channel.id in allowed_channels
+        
+        # For threads, check if parent channel is allowed
+        is_allowed_thread = False
+        if is_thread:
+            parent_channel_id = message.channel.parent_id
+            is_allowed_thread = parent_channel_id in allowed_channels
+        
+        # Track general server activity for all registered users (for reachout purposes)
+        # This helps determine if users are active in the server, even if we don't respond
+        if not isinstance(message.channel, discord.DMChannel):
+            # Check if user is registered for the intensive
+            user = data_manager.get_user(message.author.id)
+            if user:
+                # Track general server activity (but don't respond)
+                attendance_tracker.track_general_activity(message.author.id, message.channel.id)
+        
+        # If not in an authorized channel/DM/thread, ignore the message (don't respond)
+        if not (is_dm or is_allowed_channel or is_allowed_thread):
+            # Debug: Log ignored messages (can be removed in production)
+            print(f"Tracking activity but not responding to {message.author.display_name} in unauthorized channel: {message.channel.name} (ID: {message.channel.id})")
+            return
+        
         # Handle intensive join channel - SIMPLE AND DIRECT
         if message.channel.id == config.INTENSIVE_JOIN_CHANNEL_ID:
             await self._handle_intensive_join_message(message)
@@ -1465,6 +1505,16 @@ class RefoldCoachingBot(commands.Bot):
 async def update_goals(ctx):
     """Update user goals."""
     user_id = ctx.author.id
+    
+    # Check if command is used in an allowed channel
+    allowed_channels = [
+        config.INTENSIVE_JOIN_CHANNEL_ID,
+        config.BOT_CHAT_CHANNEL_ID
+    ]
+    
+    if ctx.channel.id not in allowed_channels and not isinstance(ctx.channel, discord.DMChannel):
+        await ctx.send("❌ This command can only be used in the bot chat channel or DMs.")
+        return
     
     # Check if user is registered
     user = data_manager.get_user(user_id)

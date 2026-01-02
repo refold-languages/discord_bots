@@ -10,6 +10,7 @@ import asyncio
 import subprocess
 import tempfile
 import time
+import traceback
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -477,6 +478,36 @@ class YouTubeService(BaseService):
         if not api_key:
             raise DataError("Deepseek API key not found. Use !loadkey deepseek <key> to set it.")
         
+        # Stage 1: Validate and log text processing
+        text_bytes = len(text.encode('utf-8'))
+        text_chars = len(text)
+        word_count = len(text.split())
+        text_preview = text[:500] if len(text) > 500 else text
+        text_preview_end = text[-200:] if len(text) > 200 else text
+        
+        self.logger.info("deepseek_api_preparation",
+                        text_bytes=text_bytes,
+                        text_chars=text_chars,
+                        word_count=word_count,
+                        video_title=video_title,
+                        title_length=len(video_title))
+        
+        self.logger.debug("deepseek_api_text_preview",
+                         preview_start=text_preview,
+                         preview_end=text_preview_end)
+        
+        # Validate text for potential issues
+        if not text or not text.strip():
+            self.logger.error("deepseek_api_empty_text")
+            raise ValidationError("Cleaned text is empty or whitespace-only", field="text")
+        
+        # Check for encoding issues
+        try:
+            text.encode('utf-8')
+        except UnicodeEncodeError as e:
+            self.logger.error("deepseek_api_encoding_error", error=str(e))
+            raise ValidationError(f"Text encoding error: {str(e)}", field="text")
+        
         prompt = f"""You are tasked with converting a YouTube video transcript into a well-formatted markdown blog post. 
 
 The video title is: "{video_title}"
@@ -497,6 +528,7 @@ Here's the transcript:
 
 Please format this as a clean, readable markdown blog post. Include no other content in your output, only the post."""
 
+        # Stage 2: Prepare request and log payload
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {api_key}"
@@ -514,38 +546,181 @@ Please format this as a clean, readable markdown blog post. Include no other con
             "temperature": 0.3
         }
         
+        # Calculate payload size
         try:
-            async with aiohttp.ClientSession() as session:
+            payload_json = json.dumps(data)
+            payload_size = len(payload_json.encode('utf-8'))
+        except Exception as e:
+            self.logger.error("deepseek_api_payload_serialization_error", error=str(e))
+            raise ValidationError(f"Failed to serialize request payload: {str(e)}", field="payload")
+        
+        self.logger.info("deepseek_api_request_prepared",
+                        prompt_length=len(prompt),
+                        payload_size_bytes=payload_size,
+                        max_tokens=data["max_tokens"],
+                        model=data["model"])
+        
+        # Log sanitized headers (no API key)
+        sanitized_headers = {k: ("***" if k == "Authorization" else v) for k, v in headers.items()}
+        self.logger.debug("deepseek_api_request_headers", headers=sanitized_headers)
+        
+        # Stage 3: Make API call with timeout
+        api_start_time = time.time()
+        timeout = aiohttp.ClientTimeout(total=600)  # 10 minute timeout
+        
+        self.logger.info("deepseek_api_call_starting",
+                        timestamp=datetime.utcnow().isoformat(),
+                        timeout_seconds=600)
+        
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.post("https://api.deepseek.com/v1/chat/completions", 
                                       headers=headers, json=data) as response:
-                    if response.status != 200:
-                        error_text = await response.text()
-                        self.logger.error("deepseek_api_error", 
-                                        status=response.status, 
-                                        error=error_text)
-                        raise DataError(f"Deepseek API returned status {response.status}")
+                    # Stage 4: Log response immediately
+                    api_response_time = time.time() - api_start_time
                     
-                    result = await response.json()
+                    self.logger.info("deepseek_api_response_received",
+                                    status=response.status,
+                                    response_time_seconds=api_response_time,
+                                    headers=dict(response.headers))
+                    
+                    # Get response body for logging
+                    response_text = await response.text()
+                    response_preview = response_text[:1000] if len(response_text) > 1000 else response_text
+                    
+                    self.logger.debug("deepseek_api_response_preview",
+                                     preview=response_preview,
+                                     full_length=len(response_text))
+                    
+                    if response.status != 200:
+                        self.logger.error("deepseek_api_error",
+                                        status=response.status,
+                                        response_time_seconds=api_response_time,
+                                        error_text=response_text,
+                                        error_preview=response_preview)
+                        raise DataError(f"Deepseek API returned status {response.status}: {response_text[:500]}")
+                    
+                    # Stage 5: Parse and validate response structure
+                    try:
+                        result = json.loads(response_text)
+                    except json.JSONDecodeError as e:
+                        self.logger.error("deepseek_api_json_decode_error",
+                                        error=str(e),
+                                        response_preview=response_preview,
+                                        response_length=len(response_text))
+                        raise DataError(f"Failed to parse API response as JSON: {str(e)}")
+                    
+                    # Validate response structure before accessing nested keys
+                    if not isinstance(result, dict):
+                        self.logger.error("deepseek_api_invalid_response_type",
+                                        response_type=type(result).__name__,
+                                        response_preview=str(result)[:500])
+                        raise DataError("API response is not a dictionary")
+                    
+                    if 'choices' not in result:
+                        self.logger.error("deepseek_api_missing_choices",
+                                        response_keys=list(result.keys()),
+                                        response_preview=str(result)[:500])
+                        raise DataError("API response missing 'choices' field")
+                    
+                    if not isinstance(result['choices'], list) or len(result['choices']) == 0:
+                        self.logger.error("deepseek_api_invalid_choices",
+                                        choices_type=type(result.get('choices')).__name__,
+                                        choices_length=len(result.get('choices', [])),
+                                        response_preview=str(result)[:500])
+                        raise DataError("API response 'choices' is empty or not a list")
+                    
+                    if 'message' not in result['choices'][0]:
+                        self.logger.error("deepseek_api_missing_message",
+                                        choice_keys=list(result['choices'][0].keys()) if result['choices'] else [],
+                                        response_preview=str(result)[:500])
+                        raise DataError("API response missing 'message' field in choices[0]")
+                    
+                    if 'content' not in result['choices'][0]['message']:
+                        self.logger.error("deepseek_api_missing_content",
+                                        message_keys=list(result['choices'][0]['message'].keys()),
+                                        response_preview=str(result)[:500])
+                        raise DataError("API response missing 'content' field in message")
+                    
                     raw_content = result['choices'][0]['message']['content']
                     
                     # Clean up the response to remove markdown code block wrappers
                     blog_content = self._cleanup_deepseek_response(raw_content)
                     
-                    self.logger.info("deepseek_api_success", 
+                    total_time = time.time() - api_start_time
+                    self.logger.info("deepseek_api_success",
                                    input_length=len(text),
                                    output_length=len(blog_content),
-                                   cleanup_applied=len(raw_content) != len(blog_content))
+                                   raw_output_length=len(raw_content),
+                                   cleanup_applied=len(raw_content) != len(blog_content),
+                                   total_time_seconds=total_time,
+                                   response_time_seconds=api_response_time)
                     
                     return blog_content
                     
+        except asyncio.TimeoutError as e:
+            elapsed_time = time.time() - api_start_time
+            self.logger.error("deepseek_api_timeout",
+                            elapsed_seconds=elapsed_time,
+                            timeout_seconds=600,
+                            error=str(e),
+                            stack_trace=traceback.format_exc())
+            raise DataError(f"Deepseek API request timed out after {elapsed_time:.1f} seconds")
+        except aiohttp.ClientTimeout as e:
+            elapsed_time = time.time() - api_start_time
+            self.logger.error("deepseek_api_client_timeout",
+                            elapsed_seconds=elapsed_time,
+                            error=str(e),
+                            error_type=type(e).__name__,
+                            stack_trace=traceback.format_exc())
+            raise DataError(f"Deepseek API request timed out: {str(e)}")
         except aiohttp.ClientError as e:
-            self.logger.error("deepseek_api_client_error", error=str(e))
+            elapsed_time = time.time() - api_start_time
+            self.logger.error("deepseek_api_client_error",
+                            elapsed_seconds=elapsed_time,
+                            error=str(e),
+                            error_type=type(e).__name__,
+                            stack_trace=traceback.format_exc())
             raise DataError(f"Failed to connect to Deepseek API: {str(e)}")
         except KeyError as e:
-            self.logger.error("deepseek_api_response_error", error=str(e))
-            raise DataError("Unexpected response from Deepseek API")
+            elapsed_time = time.time() - api_start_time
+            self.logger.error("deepseek_api_response_key_error",
+                            elapsed_seconds=elapsed_time,
+                            missing_key=str(e),
+                            error_type=type(e).__name__,
+                            stack_trace=traceback.format_exc())
+            raise DataError(f"Unexpected response structure from Deepseek API: missing key '{e}'")
+        except json.JSONDecodeError as e:
+            elapsed_time = time.time() - api_start_time
+            self.logger.error("deepseek_api_json_error",
+                            elapsed_seconds=elapsed_time,
+                            error=str(e),
+                            error_type=type(e).__name__,
+                            stack_trace=traceback.format_exc())
+            raise DataError(f"Failed to parse API response as JSON: {str(e)}")
+        except ValueError as e:
+            elapsed_time = time.time() - api_start_time
+            self.logger.error("deepseek_api_value_error",
+                            elapsed_seconds=elapsed_time,
+                            error=str(e),
+                            error_type=type(e).__name__,
+                            stack_trace=traceback.format_exc())
+            raise ValidationError(f"Data validation error: {str(e)}", field="api_response")
+        except TypeError as e:
+            elapsed_time = time.time() - api_start_time
+            self.logger.error("deepseek_api_type_error",
+                            elapsed_seconds=elapsed_time,
+                            error=str(e),
+                            error_type=type(e).__name__,
+                            stack_trace=traceback.format_exc())
+            raise ValidationError(f"Type error: {str(e)}", field="api_response")
         except Exception as e:
-            self.logger.error("deepseek_api_unexpected_error", error=str(e))
+            elapsed_time = time.time() - api_start_time
+            self.logger.error("deepseek_api_unexpected_error",
+                            elapsed_seconds=elapsed_time,
+                            error=str(e),
+                            error_type=type(e).__name__,
+                            stack_trace=traceback.format_exc())
             raise DataError(f"Deepseek API error: {str(e)}")
     
     def split_message_for_discord(self, content: str, max_length: int = 2000) -> List[str]:
@@ -665,7 +840,42 @@ Please format this as a clean, readable markdown blog post. Include no other con
         if not clean_text:
             raise DataError("No usable text content found in subtitles.")
         
+        # Validate cleaned text
+        clean_text_bytes = len(clean_text.encode('utf-8'))
+        clean_text_chars = len(clean_text)
         word_count = len(clean_text.split())
+        clean_preview = clean_text[:500] if len(clean_text) > 500 else clean_text
+        
+        self.logger.info("subtitle_cleaning_complete",
+                        original_length=len(subtitle_content),
+                        cleaned_bytes=clean_text_bytes,
+                        cleaned_chars=clean_text_chars,
+                        word_count=word_count,
+                        preview=clean_preview)
+        
+        # Additional validation checks
+        if not clean_text.strip():
+            self.logger.error("cleaned_text_is_whitespace_only",
+                            original_length=len(subtitle_content))
+            raise DataError("Cleaned text contains only whitespace.")
+        
+        # Check for extremely long text (potential API limits)
+        # Deepseek typically has limits around 32k-128k tokens, roughly 24k-96k words
+        if word_count > 50000:
+            self.logger.warning("cleaned_text_very_long",
+                              word_count=word_count,
+                              bytes=clean_text_bytes,
+                              chars=clean_text_chars)
+        
+        # Check for encoding issues
+        try:
+            clean_text.encode('utf-8')
+        except UnicodeEncodeError as e:
+            self.logger.error("cleaned_text_encoding_error",
+                            error=str(e),
+                            preview=clean_preview)
+            raise DataError(f"Encoding error in cleaned text: {str(e)}")
+        
         estimated_time = self.estimate_processing_time(word_count)
         
         if progress_callback:

@@ -6,6 +6,7 @@ Handles video/doc lookup, educational content, resource links, and YouTube proce
 import csv
 import os
 import asyncio
+import traceback
 from datetime import datetime
 
 import discord
@@ -15,7 +16,7 @@ import doclist
 from config.constants import VIDEO_LINKS_FILE, CROWDSOURCE_DOCS_FILE
 from services import YouTubeService, ProcessingProgress
 from core import DataManager
-from utils import get_logger, monitor_command, ValidationError, DiscordError
+from utils import get_logger, monitor_command, ValidationError, DiscordError, DataError
 
 
 class Resources(commands.Cog):
@@ -224,16 +225,20 @@ class Resources(commands.Cog):
         """Process YouTube video in background with progress updates."""
         typing_task = None
         temp_files = []
+        current_stage = "initialization"
         
         try:
             # Send initial message and start typing
             await thread.send("🎬 Creating blog post from video. This can take a while, depending on the length of the video.")
+            current_stage = "initialization"
             
             # Start typing indicator
             typing_task = asyncio.create_task(self._keep_typing(thread))
             
             # Progress callback function
             async def progress_callback(progress: ProcessingProgress):
+                nonlocal current_stage
+                current_stage = progress.stage
                 if progress.stage == "info":
                     await thread.send(f"📺 {progress.message}")
                 elif progress.stage == "processing":
@@ -245,10 +250,17 @@ class Resources(commands.Cog):
                     await thread.send(f"🔄 {progress.message}")
             
             # Process the video
+            current_stage = "video_processing"
+            self.logger.info("youtube_conversion_started",
+                           url=url,
+                           thread_id=thread.id,
+                           stage=current_stage)
+            
             blog_content, video_title, file_path = await self.youtube_service.process_youtube_video(
                 url, progress_callback
             )
             temp_files.append(file_path)
+            current_stage = "content_preparation"
             
             # Stop typing
             if typing_task:
@@ -257,6 +269,7 @@ class Resources(commands.Cog):
             
             # Send success message
             await thread.send("✅ Blog post conversion completed! Posting content...")
+            current_stage = "content_posting"
             
             # Split content for Discord messages
             message_chunks = self.youtube_service.split_message_for_discord(blog_content)
@@ -272,38 +285,86 @@ class Resources(commands.Cog):
                 await asyncio.sleep(0.5)
             
             # Send file attachment
+            current_stage = "file_upload"
             try:
                 with open(file_path, 'rb') as f:
                     discord_file = discord.File(f, filename=os.path.basename(file_path))
                     await thread.send("📎 **Download as file:**", file=discord_file)
             except Exception as e:
-                self.logger.error("file_upload_failed", error=str(e))
+                self.logger.error("file_upload_failed",
+                               url=url,
+                               error=str(e),
+                               error_type=type(e).__name__,
+                               stack_trace=traceback.format_exc())
                 await thread.send("⚠️ Failed to upload file attachment, but content is shown above.")
             
             self.logger.info("youtube_conversion_completed",
                            url=url,
                            title=video_title,
-                           thread_id=thread.id)
+                           thread_id=thread.id,
+                           final_stage=current_stage)
             
         except ValidationError as e:
             if typing_task:
                 typing_task.cancel()
+            
+            self.logger.error("youtube_validation_error",
+                           url=url,
+                           stage=current_stage,
+                           error=str(e),
+                           error_type=type(e).__name__,
+                           user_message=e.user_message,
+                           stack_trace=traceback.format_exc())
+            
             await thread.send(f"❌ **Validation Error:** {e.user_message}")
-            self.logger.warning("youtube_validation_error", url=url, error=str(e))
+            
+        except DataError as e:
+            if typing_task:
+                typing_task.cancel()
+            
+            self.logger.error("youtube_data_error",
+                           url=url,
+                           stage=current_stage,
+                           error=str(e),
+                           error_type=type(e).__name__,
+                           user_message=e.user_message,
+                           stack_trace=traceback.format_exc())
+            
+            # Provide more specific error messages based on stage
+            if current_stage == "video_processing":
+                if "subtitles" in str(e).lower() or "subtitle" in str(e).lower():
+                    await thread.send("❌ **Error:** No subtitles found for this video. The video needs subtitles to be processed.")
+                elif "deepseek" in str(e).lower() or "api" in str(e).lower():
+                    await thread.send("❌ **Error:** Failed to process with AI. Please check that the Deepseek API key is configured correctly.")
+                else:
+                    await thread.send(f"❌ **Error:** {e.user_message}")
+            else:
+                await thread.send(f"❌ **Error:** {e.user_message}")
             
         except Exception as e:
             if typing_task:
                 typing_task.cancel()
             
-            # Handle different error types
-            if "subtitles" in str(e).lower():
-                await thread.send("❌ **Error:** No subtitles found for this video. The video needs English subtitles to be processed.")
-            elif "deepseek" in str(e).lower():
-                await thread.send("❌ **Error:** Failed to process with AI. Please check that the Deepseek API key is configured correctly.")
-            else:
-                await thread.send(f"❌ **Error:** {str(e)}")
+            error_type = type(e).__name__
+            error_message = str(e)
+            stack_trace = traceback.format_exc()
             
-            self.logger.error("youtube_conversion_failed", url=url, error=str(e))
+            self.logger.error("youtube_conversion_failed",
+                           url=url,
+                           stage=current_stage,
+                           error=error_message,
+                           error_type=error_type,
+                           stack_trace=stack_trace)
+            
+            # Handle different error types with more context
+            if "subtitles" in error_message.lower() or "subtitle" in error_message.lower():
+                await thread.send("❌ **Error:** No subtitles found for this video. The video needs subtitles to be processed.")
+            elif "deepseek" in error_message.lower() or "api" in error_message.lower():
+                await thread.send("❌ **Error:** Failed to process with AI. Please check that the Deepseek API key is configured correctly.")
+            elif "timeout" in error_message.lower():
+                await thread.send(f"❌ **Error:** The request timed out. This might be due to a very long video or API issues. Please try again later.")
+            else:
+                await thread.send(f"❌ **Error:** {error_message}")
         
         finally:
             # Clean up temporary files

@@ -30,6 +30,17 @@ class AttendanceTracker:
         """Track a user joining a voice channel."""
         data_manager.update_user_attendance(user_id, voice_joins=1)
     
+    def track_general_activity(self, user_id: int, channel_id: int):
+        """Track general server activity for reachout purposes."""
+        # Only track if user is registered for the intensive
+        user = data_manager.get_user(user_id)
+        if not user:
+            return
+        
+        # Track general server activity (messages in any channel except DMs)
+        # This helps determine if users are active in the server
+        data_manager.update_user_attendance(user_id, messages=1)
+    
     def parse_activity_feed_message(self, message: discord.Message) -> Optional[Dict[str, Any]]:
         """Parse activity feed message and extract user activity data."""
         if message.channel.id != config.ACTIVITY_FEED_CHANNEL_ID:
