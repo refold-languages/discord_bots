@@ -11,6 +11,7 @@ from .migration_service import MigrationService, MigrationReport
 from .course_service import CourseService, StudentRecord, CourseConfig
 from .homework_service import HomeworkService, HomeworkAssignment
 from .youtube_service import YouTubeService, VideoInfo, ProcessingProgress
+from .honeypot_service import HoneypotService
 
 __all__ = [
     'BaseService',
@@ -29,4 +30,5 @@ __all__ = [
     'YouTubeService',
     'VideoInfo',
     'ProcessingProgress',
+    'HoneypotService',
 ]

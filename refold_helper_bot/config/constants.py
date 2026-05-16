@@ -106,6 +106,26 @@ IGNORED_SERVER_IDS = [757802790532677683, 778787713012727809, 778331995297808438
 DELETED_MESSAGE_LOG_CHANNEL_ID = 966080907477909514
 
 # =============================================================================
+# SPAM HONEYPOT
+# =============================================================================
+
+# Any channel whose name exactly matches this will act as a spam honeypot:
+# anyone (without mod/admin powers) who posts in it is instantly banned.
+HONEYPOT_CHANNEL_NAME = 'spam-honeypot'
+
+# Channel where honeypot bans are logged as embeds so admins can review them.
+# Set this to the ID of a mod-only channel. If left as None, Discord channel
+# logging is skipped (bans are still recorded to the structured log + JSON file).
+HONEYPOT_LOG_CHANNEL_ID = None
+
+# How far back to purge a banned spammer's messages, in seconds.
+# Discord allows up to 7 days (604800s); we use the last 6 hours.
+HONEYPOT_BAN_DELETE_MESSAGE_SECONDS = 6 * 60 * 60  # 21600
+
+# Durable record of every honeypot ban (under settings.DATA_DIR).
+HONEYPOT_RECORD_FILE = 'honeypot_bans.json'
+
+# =============================================================================
 # ADMINISTRATION
 # =============================================================================
 
