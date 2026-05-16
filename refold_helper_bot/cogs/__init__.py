@@ -13,4 +13,5 @@ COGS = [
     'cogs.admin',
     'cogs.course',
     'cogs.homework',
+    'cogs.honeypot',
 ]
