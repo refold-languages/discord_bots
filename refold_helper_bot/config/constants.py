@@ -116,7 +116,8 @@ HONEYPOT_CHANNEL_NAME = 'spam-honeypot'
 # Channel where honeypot bans are logged as embeds so admins can review them.
 # Set this to the ID of a mod-only channel. If left as None, Discord channel
 # logging is skipped (bans are still recorded to the structured log + JSON file).
-HONEYPOT_LOG_CHANNEL_ID = None
+# Currently shares the deleted-message mod log channel.
+HONEYPOT_LOG_CHANNEL_ID = 966080907477909514
 
 # How far back to purge a banned spammer's messages, in seconds.
 # Discord allows up to 7 days (604800s); we use the last 6 hours.
