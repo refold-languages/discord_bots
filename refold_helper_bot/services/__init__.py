@@ -12,6 +12,13 @@ from .course_service import CourseService, StudentRecord, CourseConfig
 from .homework_service import HomeworkService, HomeworkAssignment
 from .youtube_service import YouTubeService, VideoInfo, ProcessingProgress
 from .honeypot_service import HoneypotService
+from .spam_detection_service import (
+    SpamDetectionService,
+    ACTION_NONE,
+    ACTION_TIMEOUT,
+    ACTION_BAN,
+)
+from .enforcement_state import EnforcementState, enforcement_state
 
 __all__ = [
     'BaseService',
@@ -31,4 +38,10 @@ __all__ = [
     'VideoInfo',
     'ProcessingProgress',
     'HoneypotService',
+    'SpamDetectionService',
+    'ACTION_NONE',
+    'ACTION_TIMEOUT',
+    'ACTION_BAN',
+    'EnforcementState',
+    'enforcement_state',
 ]

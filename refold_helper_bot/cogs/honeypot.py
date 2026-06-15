@@ -12,8 +12,8 @@ can post the warning message itself.
 import discord
 from discord.ext import commands
 
-from services import HoneypotService
-from config.constants import HONEYPOT_LOG_CHANNEL_ID
+from services import HoneypotService, enforcement_state
+from config.constants import HONEYPOT_LOG_CHANNEL_ID, ANTISPAM_TEST_REACTION_BAN
 from utils import get_logger
 
 
@@ -28,6 +28,7 @@ class Honeypot(commands.Cog):
     async def cog_load(self):
         """Initialize the honeypot service when the cog loads."""
         self.honeypot_service.initialize()
+        enforcement_state.initialize()
         self.logger.info("honeypot_cog_loaded")
 
     def _has_staff_powers(self, member: discord.Member) -> bool:
@@ -62,12 +63,21 @@ class Honeypot(commands.Cog):
         author = message.author
         guild = message.guild
 
-        is_exempt = self.honeypot_service.is_exempt(
-            is_bot=bool(getattr(author, 'bot', False)),
-            is_guild_owner=(author.id == guild.owner_id),
-            has_staff_powers=self._has_staff_powers(author),
-        )
-        if is_exempt:
+        # Bots (including this one) are always ignored, even in test mode, so
+        # the pinned warning message never trips the honeypot.
+        if bool(getattr(author, 'bot', False)):
+            return
+
+        # Staff and the owner are exempt from the ban. In test mode we still
+        # flag them (reaction + [TEST] log only, never banned) so admins can
+        # verify the honeypot without a separate account.
+        is_staff = (author.id == guild.owner_id
+                    or self._has_staff_powers(author))
+        if is_staff and not enforcement_state.is_test_mode():
+            return
+
+        # Master kill switch: take no action when enforcement is disabled.
+        if not enforcement_state.is_enabled():
             return
 
         record = self.honeypot_service.build_ban_record(
@@ -79,6 +89,20 @@ class Honeypot(commands.Cog):
             channel_name=channel_name,
             message_content=message.content,
         )
+
+        # Test mode: react + log instead of banning, so staff can verify safely.
+        if enforcement_state.is_test_mode():
+            try:
+                await message.add_reaction(ANTISPAM_TEST_REACTION_BAN)
+            except discord.HTTPException as e:
+                self.logger.warning("honeypot_test_reaction_failed",
+                                    error=str(e), error_type=type(e).__name__)
+            self.logger.info("honeypot_test_mode_trigger",
+                             user_id=author.id, guild_id=guild.id,
+                             channel_id=message.channel.id)
+            await self._post_log_embed(record, test_mode=True,
+                                       fallback_channel=message.channel)
+            return
 
         delete_seconds = self.honeypot_service.get_ban_delete_seconds()
         try:
@@ -112,21 +136,28 @@ class Honeypot(commands.Cog):
 
         await self._post_log_embed(record)
 
-    async def _post_log_embed(self, record: dict):
+    async def _post_log_embed(self, record: dict, test_mode: bool = False,
+                              fallback_channel=None):
         """Post a human-readable ban record to the mod log channel, if set."""
-        if not HONEYPOT_LOG_CHANNEL_ID:
-            return
-
-        channel = self.bot.get_channel(HONEYPOT_LOG_CHANNEL_ID)
+        channel = (self.bot.get_channel(HONEYPOT_LOG_CHANNEL_ID)
+                   if HONEYPOT_LOG_CHANNEL_ID else None)
         if channel is None:
-            self.logger.error("honeypot_log_channel_not_found",
-                              channel_id=HONEYPOT_LOG_CHANNEL_ID)
-            return
+            # In test mode fall back to the triggering channel so feedback is
+            # visible even on a server without the configured mod-log channel.
+            if fallback_channel is not None:
+                channel = fallback_channel
+            else:
+                self.logger.error("honeypot_log_channel_not_found",
+                                  channel_id=HONEYPOT_LOG_CHANNEL_ID)
+                return
 
         embed = discord.Embed(
-            title='🍯 Spam honeypot ban',
-            description='A user was auto-banned for posting in the honeypot channel.',
-            color=0xE74C3C,
+            title='🧪 [TEST] Honeypot — would ban' if test_mode else '🍯 Spam honeypot ban',
+            description=('**Test mode — no action taken.** This user posted in the '
+                         'honeypot and would have been banned.'
+                         if test_mode else
+                         'A user was auto-banned for posting in the honeypot channel.'),
+            color=0x95A5A6 if test_mode else 0xE74C3C,
         )
         embed.add_field(name='User',
                         value=f"{record['user_name']} (`{record['user_id']}`)",
