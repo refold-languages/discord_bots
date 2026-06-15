@@ -127,6 +127,88 @@ HONEYPOT_BAN_DELETE_MESSAGE_SECONDS = 6 * 60 * 60  # 21600
 HONEYPOT_RECORD_FILE = 'honeypot_bans.json'
 
 # =============================================================================
+# ANTI-SPAM (heuristic detection)
+# =============================================================================
+#
+# Heuristic spam detection for hacked accounts / spam bots. Works alongside the
+# honeypot: the honeypot catches bots that post in the trap channel, while this
+# watches behaviour across all channels. Detectors feed a tiered action engine:
+#
+#   BAN    - high confidence (image flood, word-filter hit, brand-new account)
+#   TIMEOUT- softer signals from an established member (repeat/cross-channel)
+#   NONE   - below threshold
+#
+# All thresholds are intentionally conservative to start; tune after watching
+# the mod log. Times are in seconds unless noted.
+
+# Master switch. Per-guild runtime toggles are layered on top (see record file).
+ANTISPAM_ENABLED = True
+
+# Guilds the anti-spam runs in. Defaults to the full community network.
+# (Imported lazily by the service to avoid ordering issues.)
+ANTISPAM_GUILD_IDS = COMMUNITY_SERVERS
+
+# --- Detector: image flood -------------------------------------------------
+# More than this many image-bearing messages within the window -> high-confidence ban.
+ANTISPAM_IMAGE_MAX = 2          # allow up to 2
+ANTISPAM_IMAGE_WINDOW = 10      # seconds
+
+# --- Detector: cross-channel repeat ---------------------------------------
+# Same normalized content posted in more than this many DISTINCT channels
+# within the window -> spam.
+ANTISPAM_CROSS_CHANNEL_MAX = 2  # allow up to 2 distinct channels
+ANTISPAM_CROSS_CHANNEL_WINDOW = 10  # seconds
+
+# --- Detector: rapid repeat (single or multi channel) ---------------------
+# Same normalized content posted this many times within the window -> spam.
+ANTISPAM_REPEAT_MAX = 5         # 5 identical messages
+ANTISPAM_REPEAT_WINDOW = 8      # seconds
+
+# --- Detector: word filter for new users ----------------------------------
+# Applies only to members who joined within this many minutes.
+ANTISPAM_NEW_USER_MINUTES = 5
+# Case-insensitive substring/regex patterns. A match from a new user is a
+# high-confidence ban. Keep this list tight to avoid false positives.
+# (Slurs intentionally omitted from source; add via deployment if desired.)
+ANTISPAM_WORD_FILTER_PATTERNS = [
+    r'@everyone',
+    r'@here',
+    r'free\s+nitro',
+    r'discord\s*nitro',
+    r'steamcommunity\.com/gift',
+    r'bit\.ly/',
+    r'tinyurl\.com/',
+    r't\.me/',
+    r'gift',  # broad; combined with new-user + link heuristics in the service
+]
+
+# --- Confidence inputs -----------------------------------------------------
+# Accounts younger than this (days) escalate soft signals to a ban.
+ANTISPAM_NEW_ACCOUNT_DAYS = 7
+
+# --- Actions ---------------------------------------------------------------
+# Message history to purge on a ban (seconds). Matches honeypot default (6h).
+ANTISPAM_BAN_DELETE_MESSAGE_SECONDS = 6 * 60 * 60   # 21600
+# Timeout duration for the softer tier (seconds). 1 week, like Rai.
+ANTISPAM_TIMEOUT_SECONDS = 7 * 24 * 60 * 60         # 604800
+
+# Channel where anti-spam actions are logged as embeds (shares the mod log).
+ANTISPAM_LOG_CHANNEL_ID = 966080907477909514
+
+# Durable record of every anti-spam action (under settings.DATA_DIR).
+ANTISPAM_RECORD_FILE = 'antispam_actions.json'
+# Per-guild on/off overrides (under settings.DATA_DIR).
+ANTISPAM_CONFIG_FILE = 'antispam_config.json'
+
+# --- Test mode -------------------------------------------------------------
+# In test mode (toggled at runtime via `!moderation testmode on`), no one is
+# banned/timed-out/deleted. Instead the bot reacts to any message that WOULD
+# have been actioned, so staff can safely verify detection. Applies to BOTH
+# the anti-spam detectors and the honeypot.
+ANTISPAM_TEST_REACTION_BAN = '🚨'       # would have been banned
+ANTISPAM_TEST_REACTION_TIMEOUT = '⏳'   # would have been timed out
+
+# =============================================================================
 # ADMINISTRATION
 # =============================================================================
 
