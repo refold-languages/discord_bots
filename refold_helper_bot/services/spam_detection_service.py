@@ -63,13 +63,15 @@ _SWEEP_EVERY = 500
 class _Event:
     """A single recent message by a user, kept in the sliding window."""
 
-    __slots__ = ('ts', 'image_count', 'content', 'channel_id')
+    __slots__ = ('ts', 'image_count', 'content', 'channel_id', 'message_id')
 
-    def __init__(self, ts: float, image_count: int, content: str, channel_id: int):
+    def __init__(self, ts: float, image_count: int, content: str,
+                 channel_id: int, message_id: int):
         self.ts = ts
         self.image_count = image_count
         self.content = content
         self.channel_id = channel_id
+        self.message_id = message_id
 
 
 class SpamDetectionService(BaseService):
@@ -152,8 +154,8 @@ class SpamDetectionService(BaseService):
         return None
 
     def evaluate(self, *, guild_id: int, user_id: int, channel_id: int,
-                 timestamp: float, image_count: int, content: str,
-                 account_age_days: Optional[float],
+                 message_id: int, timestamp: float, image_count: int,
+                 content: str, account_age_days: Optional[float],
                  joined_minutes_ago: Optional[float]) -> Dict[str, Any]:
         """
         Record a message and decide what action (if any) the user has earned.
@@ -180,7 +182,8 @@ class SpamDetectionService(BaseService):
         normalized = self.normalize(content)
         key = (guild_id, user_id)
         events = self._events[key]
-        events.append(_Event(timestamp, image_count, normalized, channel_id))
+        events.append(_Event(timestamp, image_count, normalized, channel_id,
+                             message_id))
         self._prune(events, now=timestamp)
 
         reasons: List[str] = []
@@ -261,6 +264,17 @@ class SpamDetectionService(BaseService):
             action = ACTION_NONE
             confidence = None
 
+        # Collect the spam burst's message references so the cog can delete
+        # them. For text spam that's every recent message with the offending
+        # content; otherwise just the triggering message. (Ban-tier deletion
+        # is handled by Discord's purge-on-ban; this matters for the timeout
+        # tier, which has no built-in bulk delete.)
+        if len(normalized) >= _MIN_TRACKED_CONTENT_LEN:
+            message_refs = [(e.channel_id, e.message_id) for e in events
+                            if e.content == normalized]
+        else:
+            message_refs = [(channel_id, message_id)]
+
         # On a terminal action, forget the user's window so we don't re-fire
         # on the same evidence for an already-actioned account.
         if action != ACTION_NONE:
@@ -271,6 +285,7 @@ class SpamDetectionService(BaseService):
             'confidence': confidence,
             'reasons': reasons,
             'detectors': detectors,
+            'message_refs': message_refs,
         }
 
     # ------------------------------------------------------------------

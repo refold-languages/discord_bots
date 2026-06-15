@@ -133,6 +133,7 @@ class AntiSpam(commands.Cog):
             guild_id=guild.id,
             user_id=author.id,
             channel_id=message.channel.id,
+            message_id=message.id,
             timestamp=message.created_at.timestamp(),
             image_count=self._count_images(message),
             content=message.content or '',
@@ -242,11 +243,28 @@ class AntiSpam(commands.Cog):
                               error=str(e), error_type=type(e).__name__)
             return False
 
-        try:
-            await message.delete()
-        except discord.HTTPException:
-            pass
+        # Timeout has no built-in bulk delete, so remove the spam burst the
+        # detector saw (across whatever channels it spanned), not just the
+        # one triggering message.
+        await self._purge_refs(decision.get('message_refs') or [(message.channel.id,
+                                                                  message.id)])
         return True
+
+    async def _purge_refs(self, refs):
+        """Delete a list of (channel_id, message_id) spam messages."""
+        deleted = 0
+        for channel_id, message_id in refs:
+            channel = self.bot.get_channel(channel_id)
+            if channel is None:
+                continue
+            try:
+                await channel.get_partial_message(message_id).delete()
+                deleted += 1
+            except discord.HTTPException:
+                pass
+        if deleted:
+            self.logger.info("antispam_burst_purged", deleted=deleted,
+                             attempted=len(refs))
 
     # ------------------------------------------------------------------
     # Test mode
