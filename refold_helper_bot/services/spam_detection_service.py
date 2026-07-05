@@ -30,6 +30,8 @@ from config.constants import (
     ANTISPAM_GUILD_IDS,
     ANTISPAM_IMAGE_MAX,
     ANTISPAM_IMAGE_WINDOW,
+    ANTISPAM_LONE_IMAGE_MIN,
+    ANTISPAM_LONE_IMAGE_WINDOW,
     ANTISPAM_CROSS_CHANNEL_MAX,
     ANTISPAM_CROSS_CHANNEL_WINDOW,
     ANTISPAM_REPEAT_MAX,
@@ -94,6 +96,7 @@ class SpamDetectionService(BaseService):
             ANTISPAM_IMAGE_WINDOW,
             ANTISPAM_CROSS_CHANNEL_WINDOW,
             ANTISPAM_REPEAT_WINDOW,
+            ANTISPAM_LONE_IMAGE_WINDOW,
         )
 
         self._patterns = [
@@ -204,6 +207,26 @@ class SpamDetectionService(BaseService):
                 f"(limit {ANTISPAM_IMAGE_MAX})."
             )
 
+        # --- Detector: lone image dump --------------------------------
+        # A single message with several images, no text, from a user with no
+        # other recent activity: the drive-by image scammer. Only worth the
+        # (cheap) history scan when this message could actually qualify.
+        lone_image_dump = False
+        if image_count >= ANTISPAM_LONE_IMAGE_MIN and not normalized:
+            other_recent = sum(
+                1 for e in events
+                if e.message_id != message_id
+                and timestamp - e.ts <= ANTISPAM_LONE_IMAGE_WINDOW
+            )
+            detectors['other_recent'] = other_recent
+            lone_image_dump = other_recent == 0
+            if lone_image_dump:
+                reasons.append(
+                    f"Posted {image_count} images with no text and no other "
+                    f"messages in the last {ANTISPAM_LONE_IMAGE_WINDOW}s "
+                    f"(lone image dump)."
+                )
+
         # --- Repeat / cross-channel (only for non-trivial text) -------
         cross_channel = False
         rapid_repeat = False
@@ -251,7 +274,7 @@ class SpamDetectionService(BaseService):
         # --- Tiered decision ------------------------------------------
         is_new_account = (account_age_days is not None
                           and account_age_days < ANTISPAM_NEW_ACCOUNT_DAYS)
-        soft_signal = cross_channel or rapid_repeat
+        soft_signal = cross_channel or rapid_repeat or lone_image_dump
         high_confidence = image_flood or bool(word_hit) or (soft_signal and is_new_account)
 
         if high_confidence:

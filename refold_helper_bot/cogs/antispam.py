@@ -9,9 +9,11 @@ recommends:
   * BAN     - high confidence (image flood, new-user word-filter hit, or a soft
               signal from a brand-new account). Mirrors the honeypot: ban +
               purge recent messages.
-  * TIMEOUT - softer signals (cross-channel / rapid repeat) from an established
-              member. 1-week timeout + delete the offending message, then ping
-              the mod log so staff can confirm a ban if warranted.
+  * TIMEOUT - softer signals (cross-channel / rapid repeat, or a lone image
+              dump: 2+ images with no text from a user with no recent activity)
+              from an established member. 1-week timeout + delete the offending
+              message, then ping the mod log so staff can confirm a ban if
+              warranted.
 
 Staff (anyone with mod/admin powers), the guild owner, and bots are exempt, so
 this only ever fires on ordinary members behaving like spam bots.

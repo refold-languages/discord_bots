@@ -153,6 +153,16 @@ ANTISPAM_GUILD_IDS = COMMUNITY_SERVERS
 ANTISPAM_IMAGE_MAX = 2          # allow up to 2
 ANTISPAM_IMAGE_WINDOW = 10      # seconds
 
+# --- Detector: lone image dump --------------------------------------------
+# A single message carrying at least this many images, with NO text content,
+# from a user who has no other recent messages (within the lookback window
+# below). This is the classic drive-by image scammer: they join, drop a couple
+# of images and nothing else. Treated as a soft signal, so it escalates to a
+# ban for a brand-new account and a timeout otherwise (like the repeat/
+# cross-channel detectors).
+ANTISPAM_LONE_IMAGE_MIN = 2     # images in one message
+ANTISPAM_LONE_IMAGE_WINDOW = 30  # seconds of "recent" history that exempts a user
+
 # --- Detector: cross-channel repeat ---------------------------------------
 # Same normalized content posted in more than this many DISTINCT channels
 # within the window -> spam.
