@@ -4,13 +4,49 @@ from openai import OpenAI
 import argparse
 import asyncio
 
-with open('openaiapi.txt', 'r') as token_file:
-    openai_key = token_file.read().strip()\
+with open('deepseekapi.txt', 'r') as token_file:
+    deepseek_key = token_file.read().strip()
 
-openai_client = OpenAI(api_key=openai_key)
+deepseek_client = OpenAI(api_key=deepseek_key, base_url="https://api.deepseek.com")
+
+# deepseek-v4-flash is DeepSeek's fast, low-cost model. Thinking mode is
+# disabled to keep responses quick and cheap.
+MODEL = "deepseek-v4-flash"
+NON_THINKING = {"thinking": {"type": "disabled"}}
+
+# Grammar-tutor instructions. Sent as a system message on every request so the
+# persona and guardrails apply to follow-up messages too, not just the first.
+SYSTEM_PROMPT = (
+    "You are a specially trained language grammar assistant. Here are your instructions:\n"
+    "Role and Goal: You are designed to assist immersion language learners by explaining "
+    "grammar concepts. You specialize in breaking down grammatical rules into "
+    "understandable chunks, focusing exclusively on comprehension. You explain what grammatical "
+    "constructions mean using natural language, practical examples, and simple words in the target language "
+    "to aid understanding.\n\nConstraints: You do not use drills, charts, obtuse grammar terms, and "
+    "detailed discussions on the creation or application of grammar patterns. If you ever need to use a grammar term, "
+    "it should be immediately followed by a plain explanation. You are programmed not to "
+    "instruct users on how to use grammar patterns for language improvement but to ensure they grasp the "
+    "underlying meaning.\n\nGuidelines: When providing explanations, rely on examples in the "
+    "target language, using simple and accessible vocabulary. This approach helps learners intuitively "
+    "understand how grammar works in practical contexts. Official grammar terms are introduced sparingly, "
+    "and only to offer users paths for further exploration.\n\nPersonalization: You maintain "
+    "a supportive and encouraging tone, making grammar learning a less intimidating experience. Your response is tailored "
+    "to make grammar approachable, using examples that resonate with learners at all levels.\n"
+    "If a user asks a non language related question, respond with *Sorry, I can't answer that question.* "
+    "Respond in the same language as the user's question, unless they specifically ask for a response in a different language."
+)
+
+# Bot-authored filler lines. Kept as constants so they can be filtered out of
+# conversation history when building follow-up requests.
+THINKING_MESSAGE = "Allow me a moment to think."
+LIMIT_MESSAGE = "This conversation has reached its limit. Please open a new thread to continue."
+ERROR_MESSAGE = "Something went wrong. Please try again."
+FILLER_MESSAGES = {THINKING_MESSAGE, LIMIT_MESSAGE, ERROR_MESSAGE}
+
+# Cap on the number of threads we track so the counter dict can't grow forever.
+MAX_TRACKED_THREADS = 1000
 
 intents = discord.Intents.all()
-intents.members = True
 bot = commands.Bot(intents=intents, command_prefix='+')
 
 channel_list = [1210371437802561637, 1215710869531656192, 1221944946827722832, 1221947610638581924]
@@ -31,7 +67,7 @@ def split_message(msg, limit=1999):
     chunks = []
     while len(msg) > limit:
         split_at = msg.rfind('. ', 0, limit + 1)
-        if split_at == -1: 
+        if split_at == -1:
             split_at = msg.rfind(' ', 0, limit + 1)
         if split_at == -1 or split_at == 0:
             split_at = limit
@@ -42,79 +78,86 @@ def split_message(msg, limit=1999):
     chunks.append(msg)
     return chunks
 
+async def get_completion(messages):
+    """Run the (blocking) DeepSeek call off the event loop so the bot stays
+    responsive while waiting on the API.
+
+    Returns the reply text, or None if the request fails or comes back empty.
+    """
+    def _call():
+        return deepseek_client.chat.completions.create(
+            model=MODEL,
+            messages=messages,
+            extra_body=NON_THINKING,
+        )
+    try:
+        response = await asyncio.to_thread(_call)
+    except Exception as exc:
+        print(f"DeepSeek request failed: {exc}")
+        return None
+    if response.choices and response.choices[0].message:
+        return response.choices[0].message.content
+    return None
+
 @bot.event
 async def on_message(message):
     await bot.process_commands(message)
-    
+
     if message.author == bot.user or message.content.startswith('+') or message.content.startswith('!'):
         return
 
     if message.channel.id in channel_list:
         thread_name = ' '.join(message.content.split()[:5])[:100]
         thread = await message.create_thread(name=thread_name, auto_archive_duration=60)
+
+        # Bound the tracking dict: evict the oldest entry once we're over the cap.
+        if len(thread_message_count) >= MAX_TRACKED_THREADS:
+            oldest = next(iter(thread_message_count))
+            del thread_message_count[oldest]
         thread_message_count[thread.id] = 1
-        await thread.send("Allow me a moment to think.")
+        await thread.send(THINKING_MESSAGE)
 
         async with thread.typing():
-            customgpt = ("You are a specially trained GPT. Here is your training:\n"
-                         "Role and Goal: You are designed to assist immersion language learners by explaining "
-                         "grammar concepts. It specializes in breaking down grammatical rules into "
-                         "understandable chunks, focusing exclusively on comprehension. You explain what grammatical "
-                         "constructions mean using natural language, practical examples, and simple words in the target language "
-                         "to aid understanding.\n\nConstraints: You do not use drills, charts, obtuse grammar terms, and "
-                         "detailed discussions on the creation or application of grammar patterns. If you ever need to use a grammar term,"
-                         "it should be immediatly followed by a plain explanation. You are programmed not to "
-                         "instruct users on how to use grammar patterns for language improvement but to ensure they grasp the "
-                         "underlying meaning.\n\nGuidelines: When providing explanations, rely on examples in the "
-                         "target language, using simple and accessible vocabulary. This approach helps learners intuitively "
-                         "understand how grammar works in practical contexts. Official grammar terms are introduced sparingly, "
-                         "and only to offer users paths for further exploration.\n\nPersonalization: You maintain "
-                         "a supportive and encouraging tone, making grammar learning a less intimidating experience. Your response is tailored "
-                         "to make grammar approachable, using examples that resonate with learners at all levels.\n"
-                         "If a user asks a non language related question, respond with *Sorry, I can\'t answer that question.*"
-                         "The response of your answer should be the same as the users' question, unless the specifically ask for a response in a different language.")
-            prompt = message.content
-            response = openai_client.chat.completions.create(
-                model="gpt-5-mini-2025-08-07",
-                messages=[
-                    {"role": "user", "content": customgpt},
-                    {"role": "user", "content": prompt}
-                ]
-            )
-            if response.choices and response.choices[0].message:
-                output = response.choices[0].message.content
-                message_chunks = split_message(output)
-                for chunk in message_chunks:
+            messages = [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": message.content},
+            ]
+            output = await get_completion(messages)
+            if output:
+                for chunk in split_message(output):
                     await thread.send(chunk)
             else:
-                await thread.send("Something went wrong. Please try again.")
+                await thread.send(ERROR_MESSAGE)
 
     elif isinstance(message.channel, discord.Thread) and message.channel.parent_id in channel_list:
         thread_id = message.channel.id
         if thread_message_count.get(thread_id, 0) < 3:
             thread_message_count[thread_id] = thread_message_count.get(thread_id, 0) + 1
-            # await message.channel.send("Allow me a moment to think.")
             async with message.channel.typing():
-                messages = []
-                async for msg in message.channel.history(limit=5):
-                    messages.insert(0, {"role": "user" if msg.author == message.author else "assistant", "content": msg.content})
+                # Rebuild the conversation, dropping the bot's own filler lines,
+                # then prepend the system prompt so the persona carries over.
+                history = []
+                async for msg in message.channel.history(limit=6):
+                    if msg.author == bot.user and msg.content in FILLER_MESSAGES:
+                        continue
+                    role = "assistant" if msg.author == bot.user else "user"
+                    history.insert(0, {"role": role, "content": msg.content})
+                messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history
 
-                response = openai_client.chat.completions.create(
-                    model="gpt-5-mini-2025-08-07",
-                    messages=messages
-                )
-                if response.choices and response.choices[0].message:
-                    output = response.choices[0].message.content
-                    message_chunks = split_message(output)
-                    for chunk in message_chunks:
+                output = await get_completion(messages)
+                if output:
+                    for chunk in split_message(output):
                         await message.channel.send(chunk)
+                else:
+                    await message.channel.send(ERROR_MESSAGE)
         else:
             if thread_message_count.get(thread_id, 0) == 3:
-                await message.channel.send("This conversation has reached its limit. Please open a new thread to continue.")
-                thread_message_count[thread_id] += 1    
+                await message.channel.send(LIMIT_MESSAGE)
+                thread_message_count[thread_id] += 1
 
-parser = argparse.ArgumentParser(description='Grammar bot')
-parser.add_argument('auth_key', type=str, help='the key to authenticate this discord bot with discord')
-args = parser.parse_args()
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Grammar bot')
+    parser.add_argument('auth_key', type=str, help='the key to authenticate this discord bot with discord')
+    args = parser.parse_args()
 
-bot.run(args.auth_key)
+    bot.run(args.auth_key)
