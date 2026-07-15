@@ -149,7 +149,11 @@ ANTISPAM_ENABLED = True
 ANTISPAM_GUILD_IDS = COMMUNITY_SERVERS
 
 # --- Detector: image flood -------------------------------------------------
-# More than this many image-bearing messages within the window -> high-confidence ban.
+# More than this many images within the window, WITH NO CAPTION on the burst,
+# looks like an image dump. This NEVER bans on its own: images are never
+# certain enough. It only fires when the burst carries no caption text, and a
+# trusted/established member (see below) is exempt entirely. Untrusted users
+# get the soft action (remove + short timeout + DM), never a ban.
 ANTISPAM_IMAGE_MAX = 2          # allow up to 2
 ANTISPAM_IMAGE_WINDOW = 10      # seconds
 
@@ -157,11 +161,22 @@ ANTISPAM_IMAGE_WINDOW = 10      # seconds
 # A single message carrying at least this many images, with NO text content,
 # from a user who has no other recent messages (within the lookback window
 # below). This is the classic drive-by image scammer: they join, drop a couple
-# of images and nothing else. Treated as a soft signal, so it escalates to a
-# ban for a brand-new account and a timeout otherwise (like the repeat/
-# cross-channel detectors).
+# of images and nothing else. Like the image flood, this NEVER bans: it is a
+# soft signal (remove + short timeout + DM) and only for untrusted users. A
+# caption on the message, or any established presence, exempts it.
 ANTISPAM_LONE_IMAGE_MIN = 2     # images in one message
 ANTISPAM_LONE_IMAGE_WINDOW = 30  # seconds of "recent" history that exempts a user
+
+# --- Trust / caption inputs ------------------------------------------------
+# Minimum length of normalized text for a message to count as "having a
+# caption". A caption alongside images means the post is treated as legit and
+# the image detectors do not fire. Users who post real text anywhere are also
+# remembered as legitimate for the rest of the process's lifetime.
+ANTISPAM_CAPTION_MIN_LEN = 3
+# A member who has been in the server at least this long is considered
+# established and is exempt from image-dump enforcement (they are not a
+# drive-by). In minutes.
+ANTISPAM_ESTABLISHED_MINUTES = 24 * 60  # 1 day
 
 # --- Detector: cross-channel repeat ---------------------------------------
 # Same normalized content posted in more than this many DISTINCT channels
@@ -178,18 +193,20 @@ ANTISPAM_REPEAT_WINDOW = 8      # seconds
 # Applies only to members who joined within this many minutes.
 ANTISPAM_NEW_USER_MINUTES = 5
 # Case-insensitive substring/regex patterns. A match from a new user is a
-# high-confidence ban. Keep this list tight to avoid false positives.
+# high-confidence ban, so keep this list TIGHT — every entry must be something
+# an innocent new member would essentially never type. Broad words like a bare
+# "gift" were removed because they ban real people; the classic scam is a Nitro
+# or gift-card LINK, which these patterns target specifically. An actual
+# @everyone/@here mention is handled separately in the service (it checks the
+# real mention flag, not the literal text, so quoting "@everyone" is safe).
 # (Slurs intentionally omitted from source; add via deployment if desired.)
 ANTISPAM_WORD_FILTER_PATTERNS = [
-    r'@everyone',
-    r'@here',
     r'free\s+nitro',
     r'discord\s*nitro',
+    r'nitro\s+gift',
     r'steamcommunity\.com/gift',
-    r'bit\.ly/',
-    r'tinyurl\.com/',
+    r'discord(app)?\.gift/',
     r't\.me/',
-    r'gift',  # broad; combined with new-user + link heuristics in the service
 ]
 
 # --- Confidence inputs -----------------------------------------------------
@@ -199,11 +216,25 @@ ANTISPAM_NEW_ACCOUNT_DAYS = 7
 # --- Actions ---------------------------------------------------------------
 # Message history to purge on a ban (seconds). Matches honeypot default (6h).
 ANTISPAM_BAN_DELETE_MESSAGE_SECONDS = 6 * 60 * 60   # 21600
-# Timeout duration for the softer tier (seconds). 1 week, like Rai.
-ANTISPAM_TIMEOUT_SECONDS = 7 * 24 * 60 * 60         # 604800
+# Timeout duration for the soft "not 100% sure" tier (seconds). Deliberately
+# short — a few minutes. The point is to stop a burst and nudge the user with a
+# DM, not to punish a possibly-innocent member. Staff can escalate from the log.
+ANTISPAM_TIMEOUT_SECONDS = 5 * 60                   # 300
 
 # Channel where anti-spam actions are logged as embeds (shares the mod log).
 ANTISPAM_LOG_CHANNEL_ID = 966080907477909514
+
+# DM sent to a user hit by the soft tier, explaining what happened and how to
+# avoid it. {minutes} is filled in with the timeout length.
+ANTISPAM_SOFT_DM_MESSAGE = (
+    "Hi! Your recent message in the Refold community was automatically removed "
+    "and you've been timed out for about {minutes} minutes because it looked "
+    "like automated spam.\n\n"
+    "**This is temporary and probably a mistake on our end — you are not "
+    "banned.** If you were sharing images, please post them one at a time "
+    "and/or add a short caption describing them, and you'll be fine. If you "
+    "think this was an error, just reach out to a moderator."
+)
 
 # Durable record of every anti-spam action (under settings.DATA_DIR).
 ANTISPAM_RECORD_FILE = 'antispam_actions.json'

@@ -6,17 +6,21 @@ message across the community servers, feeds plain values to the
 ``SpamDetectionService``, and carries out whatever escalating action the engine
 recommends:
 
-  * BAN     - high confidence (image flood, new-user word-filter hit, or a soft
-              signal from a brand-new account). Mirrors the honeypot: ban +
-              purge recent messages.
-  * TIMEOUT - softer signals (cross-channel / rapid repeat, or a lone image
-              dump: 2+ images with no text from a user with no recent activity)
-              from an established member. 1-week timeout + delete the offending
-              message, then ping the mod log so staff can confirm a ban if
-              warranted.
+  * BAN     - reserved for the near-certain cases only: a scam link or a real
+              @everyone/@here ping from a member who joined minutes ago, or the
+              same text spammed across channels by a brand-new account.
+              Mirrors the honeypot: ban + purge recent messages.
+  * TIMEOUT - the soft "not 100% sure" tier. Image dumps (which never ban) and
+              anything else that merely looks off: remove the offending
+              message(s), apply a SHORT timeout (a few minutes), and DM the
+              user explaining what happened and how to post safely. Then ping
+              the mod log — with the actual image links — so staff can confirm
+              a ban if it really was a scammer.
 
-Staff (anyone with mod/admin powers), the guild owner, and bots are exempt, so
-this only ever fires on ordinary members behaving like spam bots.
+Established members (they hold a role, have posted real text, or have been
+around a while) are never banned or timed out for image behaviour. Staff,
+the guild owner, and bots are exempt entirely, so this only ever fires on
+ordinary members behaving like spam bots.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -32,6 +36,7 @@ from config.constants import (
     ANTISPAM_LOG_CHANNEL_ID,
     ANTISPAM_TEST_REACTION_BAN,
     ANTISPAM_TEST_REACTION_TIMEOUT,
+    ANTISPAM_SOFT_DM_MESSAGE,
 )
 from utils import get_logger
 
@@ -80,6 +85,35 @@ class AntiSpam(commands.Cog):
             if embed.image or embed.thumbnail:
                 count += 1
         return count
+
+    @staticmethod
+    def _image_urls(message: discord.Message) -> list:
+        """Direct links to a message's images, so mods can review them in-log."""
+        urls = []
+        for att in message.attachments:
+            ctype = (att.content_type or '')
+            if ctype.startswith('image/') or _looks_like_image(att.filename):
+                urls.append(att.url)
+        for embed in message.embeds:
+            if embed.image and embed.image.url:
+                urls.append(embed.image.url)
+            elif embed.thumbnail and embed.thumbnail.url:
+                urls.append(embed.thumbnail.url)
+        return urls
+
+    @staticmethod
+    def _has_roles(member: discord.Member) -> bool:
+        """True if the member holds any role beyond @everyone (self-assigned).
+
+        A real presence signal: in the Refold servers members pick language
+        roles, so anyone role-bearing is treated as an established member and
+        spared image-dump enforcement.
+        """
+        roles = getattr(member, 'roles', None)
+        if not roles:
+            return False
+        # roles always includes @everyone; anything more means a real role.
+        return len(roles) > 1
 
     @staticmethod
     def _age_days(dt) -> float:
@@ -141,6 +175,8 @@ class AntiSpam(commands.Cog):
             content=message.content or '',
             account_age_days=account_days,
             joined_minutes_ago=joined_minutes,
+            has_roles=self._has_roles(author),
+            mentions_everyone=message.mention_everyone,
         )
 
         action = decision['action']
@@ -169,6 +205,7 @@ class AntiSpam(commands.Cog):
             channel_id=message.channel.id,
             channel_name=channel_name,
             message_content=message.content,
+            image_urls=self._image_urls(message),
         )
 
         # Test mode: react instead of enforcing, so staff can verify detection
@@ -229,7 +266,12 @@ class AntiSpam(commands.Cog):
         return True
 
     async def _do_timeout(self, guild, author, message, decision) -> bool:
-        """Timeout the user and delete the offending message."""
+        """Soft action: brief timeout, remove the burst, and DM the user.
+
+        This is the "not 100% sure" path. It is deliberately gentle so that a
+        wrongly-flagged member loses a message and a few minutes, not their
+        account, and is told exactly how to avoid it next time.
+        """
         duration = timedelta(seconds=self.spam_service.get_timeout_seconds())
         reason = "Anti-spam: " + " ".join(decision['reasons'])[:480]
         try:
@@ -250,7 +292,19 @@ class AntiSpam(commands.Cog):
         # one triggering message.
         await self._purge_refs(decision.get('message_refs') or [(message.channel.id,
                                                                   message.id)])
+        # Let the (possibly innocent) user know what happened and how to fix it.
+        await self._send_soft_dm(author)
         return True
+
+    async def _send_soft_dm(self, author) -> None:
+        """DM a soft-actioned user. Best-effort: many members have DMs closed."""
+        minutes = max(1, self.spam_service.get_timeout_seconds() // 60)
+        try:
+            await author.send(ANTISPAM_SOFT_DM_MESSAGE.format(minutes=minutes))
+        except (discord.Forbidden, discord.HTTPException) as e:
+            self.logger.info("antispam_soft_dm_failed",
+                             user_id=getattr(author, 'id', None),
+                             error=str(e), error_type=type(e).__name__)
 
     async def _purge_refs(self, refs):
         """Delete a list of (channel_id, message_id) spam messages."""
@@ -313,8 +367,11 @@ class AntiSpam(commands.Cog):
             title = '🚫 Anti-spam ban' if is_ban else '⏳ Anti-spam timeout'
             description = ('A user was auto-banned for spam-like behaviour.'
                            if is_ban else
-                           'A user was timed out (1 week) for spam-like behaviour. '
-                           '**Staff: confirm a ban if warranted.**')
+                           'A user was briefly timed out (a few minutes) and DMed '
+                           'because their message looked spammy but was **not** a '
+                           'sure thing. Their message was removed. '
+                           '**Staff: check the images below and ban only if this '
+                           'really is a scammer.**')
             color = 0xE74C3C if is_ban else 0xF1C40F
         embed = discord.Embed(title=title, description=description, color=color)
         embed.add_field(name='User',
@@ -332,6 +389,19 @@ class AntiSpam(commands.Cog):
         embed.add_field(name='Their message',
                         value=record['message_content'] or '*(no text content)*',
                         inline=False)
+
+        # Show the actual images so mods can eyeball whether this was a scammer
+        # or a regular member sharing screenshots. First image is previewed;
+        # all links are listed (Discord field cap is 1024 chars).
+        image_urls = record.get('image_urls') or []
+        if image_urls:
+            listed = "\n".join(image_urls)
+            if len(listed) > 1000:
+                listed = listed[:1000] + f"\n… (+{len(image_urls)} total)"
+            embed.add_field(name=f'Images ({len(image_urls)})', value=listed,
+                            inline=False)
+            embed.set_image(url=image_urls[0])
+
         embed.set_footer(text=record['timestamp'])
 
         try:
