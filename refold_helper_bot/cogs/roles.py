@@ -20,6 +20,30 @@ class Roles(commands.Cog):
         """Initialize the role service when cog loads."""
         self.role_service.initialize()
 
+    async def _resolve_member(self, guild, user_id, payload_member=None):
+        """Resolve a member without depending on the gateway member cache.
+
+        Reaction roles must keep working when the Guild Members intent is
+        unavailable, which leaves that cache empty. Three sources, cheapest
+        first:
+
+        1. ``payload.member`` - Discord includes it on reaction *adds* in a
+           guild regardless of intents. Removals never carry it.
+        2. The member cache - populated only with the members intent.
+        3. An HTTP fetch - always works, but costs a request, so it is last.
+        """
+        if payload_member is not None:
+            return payload_member
+
+        member = guild.get_member(user_id)
+        if member is not None:
+            return member
+
+        try:
+            return await guild.fetch_member(user_id)
+        except discord.HTTPException:
+            return None
+
     async def _assign_role_to_member(self, member, role_id):
         """Assign a role to a member in the main server (Discord API operation)."""
         from config.settings import settings
@@ -87,15 +111,16 @@ class Roles(commands.Cog):
             if not guild:
                 return
             
-            member = guild.get_member(payload.user_id)
+            member = await self._resolve_member(guild, payload.user_id,
+                                                payload.member)
             if not member:
                 return
-            
+
             # Get the role
             role = guild.get_role(role_id)
             if not role:
                 return
-            
+
             # Check if member already has role
             if role in member.roles:
                 return
@@ -116,14 +141,15 @@ class Roles(commands.Cog):
                 if not guild:
                     return
                 
-                member = guild.get_member(payload.user_id)
+                member = await self._resolve_member(guild, payload.user_id,
+                                                   payload.member)
                 if not member:
                     return
-                
+
                 role = guild.get_role(role_id)
                 if not role:
                     return
-                
+
                 try:
                     await member.add_roles(role)
                 except discord.HTTPException:
@@ -144,8 +170,8 @@ class Roles(commands.Cog):
             if not guild:
                 return
             
-            # Get the member
-            member = guild.get_member(payload.user_id)
+            # Get the member (removals never carry payload.member)
+            member = await self._resolve_member(guild, payload.user_id)
             if not member:
                 return
             
@@ -170,14 +196,14 @@ class Roles(commands.Cog):
                 if not guild:
                     return
                 
-                member = guild.get_member(payload.user_id)
+                member = await self._resolve_member(guild, payload.user_id)
                 if not member:
                     return
-                
+
                 role = guild.get_role(role_id)
                 if not role:
                     return
-                
+
                 try:
                     await member.remove_roles(role)
                 except discord.HTTPException:

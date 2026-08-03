@@ -25,6 +25,23 @@ class Settings:
         
         # Server configuration
         self.MAIN_SERVER_ID = int(os.getenv('MAIN_SERVER_ID', '775877387426332682'))
+
+        # Privileged gateway intents.
+        #
+        # Discord grants these only against an approved request, and re-review
+        # is annual. An app that asks for an intent it has not been granted is
+        # refused at the gateway (close code 4014) and cannot start AT ALL -
+        # which is how a lapsed request takes down every feature, including the
+        # many that need no privileged intent.
+        #
+        # So: default OFF, so the bot always connects. Flip each on via env var
+        # the moment Discord approves it - no code change, no redeploy risk.
+        #
+        # Guild Presences is deliberately absent: nothing in this codebase
+        # reads presence, and requesting an intent you cannot demonstrate a use
+        # for is a documented cause of application rejection.
+        self.INTENT_MESSAGE_CONTENT = os.getenv('INTENT_MESSAGE_CONTENT', 'false').lower() == 'true'
+        self.INTENT_GUILD_MEMBERS = os.getenv('INTENT_GUILD_MEMBERS', 'false').lower() == 'true'
         
         # Logging configuration
         self.LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()
@@ -93,6 +110,17 @@ class Settings:
         if self.ENVIRONMENT not in ['development', 'staging', 'production']:
             print(f"Warning: Unknown environment '{self.ENVIRONMENT}', expected development/staging/production")
     
+    def get_intent_config(self) -> Dict[str, bool]:
+        """Privileged intents this deployment is allowed to request.
+
+        Kept as plain booleans so this module stays free of a discord.py
+        import; the bot turns them into a ``discord.Intents``.
+        """
+        return {
+            'message_content': self.INTENT_MESSAGE_CONTENT,
+            'members': self.INTENT_GUILD_MEMBERS,
+        }
+
     def get_alert_webhooks(self) -> Dict[str, str]:
         """Get configured alert webhooks."""
         webhooks = {}

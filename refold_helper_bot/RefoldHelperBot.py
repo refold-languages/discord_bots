@@ -24,7 +24,21 @@ from utils import (
 )
 
 # Import cogs
-from cogs import COGS
+from cogs import COGS, COG_REQUIRED_INTENTS, INTENT_DEGRADED_FEATURES
+
+
+def build_intents(intent_config):
+    """Build the gateway intents from the deployment's privileged-intent flags.
+
+    Only intents this bot actually uses are ever requested. Guild Presences is
+    never requested - no code path reads presence data, and asking for an
+    unused intent both risks rejection at review and, if unapproved, prevents
+    the bot from connecting at all.
+    """
+    intents = discord.Intents.default()
+    intents.message_content = intent_config.get('message_content', False)
+    intents.members = intent_config.get('members', False)
+    return intents
 
 
 class RefoldHelperBot(commands.Bot):
@@ -35,15 +49,24 @@ class RefoldHelperBot(commands.Bot):
         setup_logging(**settings.get_log_config())
         self.logger = get_logger('bot.main')
         
-        # Initialize Discord bot
-        intents = discord.Intents.all()
-        intents.members = True
-        
+        # Initialize Discord bot. Privileged intents are opt-in per deployment
+        # so a revoked or pending intent degrades the bot instead of grounding it.
+        self.intent_config = settings.get_intent_config()
+        intents = build_intents(self.intent_config)
+
         super().__init__(
-            intents=intents, 
+            intents=intents,
             command_prefix=settings.COMMAND_PREFIX
         )
-        
+
+        self._log_intent_status()
+
+        # Cogs we will actually attempt, so health checks don't report a
+        # deliberately skipped cog as a failure.
+        self.expected_cogs = [c for c in COGS if self._skip_reason(c) is None]
+        self.skipped_cogs = {c: self._skip_reason(c) for c in COGS
+                             if self._skip_reason(c) is not None}
+
         # Initialize monitoring and alerts
         self._setup_monitoring()
         self._setup_alerts()
@@ -55,6 +78,33 @@ class RefoldHelperBot(commands.Bot):
                          environment=settings.ENVIRONMENT,
                          log_level=settings.LOG_LEVEL,
                          alerts_enabled=settings.ALERTS_ENABLED)
+
+    def _log_intent_status(self):
+        """Announce which privileged intents are on, and what is lost without them."""
+        granted = sorted(k for k, v in self.intent_config.items() if v)
+        missing = sorted(k for k, v in self.intent_config.items() if not v)
+
+        self.logger.info("privileged_intents_configured",
+                         granted=granted, missing=missing)
+        print(f"Privileged intents enabled: {granted or 'none'}")
+
+        for intent in missing:
+            features = INTENT_DEGRADED_FEATURES.get(intent, [])
+            self.logger.warning("privileged_intent_missing",
+                                intent=intent, degraded_features=features)
+            print(f"\n[DEGRADED] '{intent}' intent is OFF - unavailable:")
+            for feature in features:
+                print(f"  - {feature}")
+        if missing:
+            print("\nEnable with INTENT_MESSAGE_CONTENT=true / INTENT_GUILD_MEMBERS=true "
+                  "once Discord approves the request.\n")
+
+    def _skip_reason(self, cog):
+        """Return the missing intent blocking this cog, or None if safe to load."""
+        for intent in COG_REQUIRED_INTENTS.get(cog, ()):
+            if not self.intent_config.get(intent, False):
+                return intent
+        return None
 
     def _setup_monitoring(self):
         """Setup performance monitoring and health checks."""
@@ -78,7 +128,7 @@ class RefoldHelperBot(commands.Bot):
             async def cog_health_check():
                 """Check if all cogs are loaded properly."""
                 loaded_cogs = len(self.cogs)
-                expected_cogs = len(COGS)
+                expected_cogs = len(self.expected_cogs)
                 healthy = loaded_cogs == expected_cogs
                 message = f"Cogs loaded: {loaded_cogs}/{expected_cogs}"
                 context = {
@@ -127,14 +177,21 @@ class RefoldHelperBot(commands.Bot):
 
     async def setup_hook(self):
         """Load all cogs and start monitoring during bot setup."""
-        self.logger.info("bot_setup_starting", cog_count=len(COGS))
-        
+        self.logger.info("bot_setup_starting",
+                         cog_count=len(self.expected_cogs),
+                         skipped_cogs=self.skipped_cogs)
+
+        for cog, intent in self.skipped_cogs.items():
+            print(f"\n=== SKIPPING COG: {cog} (requires '{intent}' intent) ===")
+            self.logger.warning("cog_skipped_missing_intent",
+                                cog_name=cog, required_intent=intent)
+
         # Load cogs with performance tracking
         successful_cogs = 0
         failed_cogs = []
-        
-        for i, cog in enumerate(COGS):
-            print(f"\n=== LOADING COG {i+1}/{len(COGS)}: {cog} ===")
+
+        for i, cog in enumerate(self.expected_cogs):
+            print(f"\n=== LOADING COG {i+1}/{len(self.expected_cogs)}: {cog} ===")
             self.logger.info("attempting_to_load_cog", 
                            cog_name=cog, 
                            cog_index=i,
@@ -329,6 +386,26 @@ async def main():
         await bot.start(settings.BOT_TOKEN)
     except KeyboardInterrupt:
         print("Bot shutdown requested via keyboard interrupt...")
+    except discord.PrivilegedIntentsRequired:
+        # We asked for an intent Discord has not granted, so the gateway
+        # refused the handshake (close code 4014) and nothing started.
+        enabled = sorted(k for k, v in bot.intent_config.items() if v)
+        print("\n" + "=" * 72)
+        print("STARTUP FAILED: Discord refused a privileged intent request.")
+        print(f"Currently requesting: {enabled or 'none'}")
+        print("")
+        print("An intent is enabled here that the app is not approved for.")
+        print("Set the matching env var to false to get the bot back online:")
+        print("  INTENT_MESSAGE_CONTENT=false")
+        print("  INTENT_GUILD_MEMBERS=false")
+        print("")
+        print("Then check the approval state under Bot > Privileged Gateway")
+        print("Intents in the Discord Developer Portal.")
+        print("=" * 72 + "\n")
+        bot.logger.critical("privileged_intents_required",
+                            requested=enabled,
+                            note="Gateway refused handshake; disable unapproved intents")
+        sys.exit(1)
     except Exception as e:
         print(f"Bot crashed: {e}")
         # Try to send critical alert before exiting
