@@ -34,16 +34,14 @@ COG_REQUIRED_INTENTS = {
 INTENT_DEGRADED_FEATURES = {
     'message_content': [
         'anti-spam detection engine (cog not loaded)',
-        'all "!" prefix commands',
-        'auto-thread naming from message text',
-        'deleted-message audit log content',
+        'auto-thread naming from message text (falls back to author + date)',
+        'deleted-message audit log',
         'honeypot ban log message text (bans still fire)',
-        'homework CSV ingest via message attachment',
     ],
     'members': [
         'cross-server language role sync on join/leave',
         'automatic course enrollment on join',
-        'member enumeration in admin/course commands',
+        'role assignment for existing members on /roster load',
         'account-age and join-recency anti-spam signals',
     ],
 }

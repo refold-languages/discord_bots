@@ -4,6 +4,7 @@ Handles cross-server role sync, reaction roles, and special role features.
 """
 
 import discord
+from discord import app_commands
 from discord.ext import commands
 
 from services import RoleService
@@ -231,47 +232,54 @@ class Roles(commands.Cog):
                         pass
 
     # Spanish Book Club toggle
-    @commands.command(name='spanishbook')
-    async def toggle_spanish_book_club(self, ctx):
+    @app_commands.command(name='spanishbook', description='Toggle the Spanish Book Club role')
+    async def toggle_spanish_book_club(self, interaction: discord.Interaction):
         """Toggle Spanish Book Club role."""
         guild_id, role_id = self.role_service.get_spanish_book_club_config()
-        
+        user_id = interaction.user.id
+
         spanish_guild = self.bot.get_guild(guild_id)
         if not spanish_guild:
-            await ctx.send("Spanish server not found.")
+            await interaction.response.send_message("Spanish server not found.", ephemeral=True)
             return
-        
-        spanish_members = {member.id for member in spanish_guild.members}
-        
-        if not self.role_service.can_toggle_spanish_book_club(ctx.author.id, spanish_members):
-            await ctx.send("You must be a member of the Spanish server to use this command.")
+
+        # Membership is checked by fetching the one member, which needs no
+        # privileged intent (guild.members is empty without Guild Members).
+        spanish_member = await self._resolve_member(spanish_guild, user_id)
+        spanish_members = {spanish_member.id} if spanish_member else set()
+
+        if not self.role_service.can_toggle_spanish_book_club(user_id, spanish_members):
+            await interaction.response.send_message(
+                "You must be a member of the Spanish server to use this command.", ephemeral=True)
             return
-        
+
         from config.settings import settings
         main_guild = self.bot.get_guild(settings.MAIN_SERVER_ID)
         if not main_guild:
-            await ctx.send("Main server not found.")
+            await interaction.response.send_message("Main server not found.", ephemeral=True)
             return
-        
+
         role = main_guild.get_role(role_id)
         if not role:
-            await ctx.send("Spanish Book Club role not found.")
+            await interaction.response.send_message("Spanish Book Club role not found.", ephemeral=True)
             return
-        
-        member = main_guild.get_member(ctx.author.id)
+
+        member = await self._resolve_member(main_guild, user_id)
         if not member:
-            await ctx.send("You are not a member of the main server.")
+            await interaction.response.send_message("You are not a member of the main server.",
+                                                    ephemeral=True)
             return
-        
+
         try:
             if role in member.roles:
                 await member.remove_roles(role)
-                await ctx.send("Spanish Book Club role removed.")
+                await interaction.response.send_message("Spanish Book Club role removed.", ephemeral=True)
             else:
                 await member.add_roles(role)
-                await ctx.send("Spanish Book Club role added.")
+                await interaction.response.send_message("Spanish Book Club role added.", ephemeral=True)
         except discord.HTTPException:
-            await ctx.send("Failed to toggle role. Please try again later.")
+            await interaction.response.send_message("Failed to toggle role. Please try again later.",
+                                                    ephemeral=True)
 
 
 async def setup(bot):

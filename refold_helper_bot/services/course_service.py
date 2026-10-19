@@ -265,7 +265,7 @@ class CourseService(BaseService):
                         # Check if course exists
                         course_name = row['course_name'].strip()
                         if not self.get_course(course_name):
-                            return False, f"Row {row_num}: Course '{course_name}' not configured. Use `!course add` to create it first."
+                            return False, f"Row {row_num}: Course '{course_name}' not configured. Use `/course add` to create it first."
                         
                         student = StudentRecord(
                             email=row['email'].strip(),
@@ -317,7 +317,7 @@ class CourseService(BaseService):
                     # Check if course exists
                     course_name = row['course_name'].strip()
                     if not self.get_course(course_name):
-                        return False, f"Row {row_num}: Course '{course_name}' not configured. Use `!course add` to create it first."
+                        return False, f"Row {row_num}: Course '{course_name}' not configured. Use `/course add` to create it first."
                     
                     student = StudentRecord(
                         email=row['email'].strip(),

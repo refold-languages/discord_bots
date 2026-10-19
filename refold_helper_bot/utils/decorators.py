@@ -7,6 +7,7 @@ import functools
 import time
 from typing import Callable, Any
 
+import discord
 from discord.ext import commands
 
 from .logger import get_logger
@@ -32,15 +33,17 @@ def monitor_command(
         alert_threshold_ms: Custom threshold for slow command alerts
         
     Usage:
-        @commands.command()
+        @app_commands.command()
         @monitor_command()
-        async def mycommand(self, ctx):
+        async def mycommand(self, interaction):
             # Command implementation
             pass
     """
     def decorator(func: Callable) -> Callable:
         @functools.wraps(func)
-        async def wrapper(self, ctx: commands.Context, *args, **kwargs) -> Any:
+        async def wrapper(self, ctx, *args, **kwargs) -> Any:
+            # Works for prefix Contexts and slash-command Interactions alike.
+            user = ctx.user if isinstance(ctx, discord.Interaction) else ctx.author
             # Get logger from the cog instance or create one
             logger = getattr(self, 'logger', None) or get_logger(f'command.{func.__name__}')
             
@@ -51,7 +54,7 @@ def monitor_command(
             if log_execution:
                 logger.command_start(
                     command_name,
-                    ctx.author.id,
+                    user.id,
                     ctx.guild.id if ctx.guild else None,
                     channel_id=ctx.channel.id
                 )
@@ -61,7 +64,7 @@ def monitor_command(
                 if track_performance:
                     async with performance_monitor.track(
                         f"command_{command_name}",
-                        user_id=ctx.author.id,
+                        user_id=user.id,
                         guild_id=ctx.guild.id if ctx.guild else None,
                         channel_id=ctx.channel.id
                     ):
@@ -82,13 +85,13 @@ def monitor_command(
                                  command_name=command_name,
                                  duration_ms=duration_ms,
                                  threshold_ms=threshold,
-                                 user_id=ctx.author.id)
+                                 user_id=user.id)
                     
                     if settings.ALERTS_ENABLED:
                         await alert_system.send_performance_alert(
                             f"command_{command_name}",
                             duration_ms,
-                            user_id=ctx.author.id,
+                            user_id=user.id,
                             guild_id=ctx.guild.id if ctx.guild else None,
                             threshold_ms=threshold
                         )

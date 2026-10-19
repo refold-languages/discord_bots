@@ -7,7 +7,6 @@ from .base_service import BaseService
 from .role_service import RoleService
 from .project_service import ProjectService, ProjectData
 from .thread_service import ThreadService, ThreadMessageData
-from .migration_service import MigrationService, MigrationReport
 from .course_service import CourseService, StudentRecord, CourseConfig
 from .homework_service import HomeworkService, HomeworkAssignment
 from .youtube_service import YouTubeService, VideoInfo, ProcessingProgress
@@ -27,8 +26,6 @@ __all__ = [
     'ProjectData',
     'ThreadService',
     'ThreadMessageData',
-    'MigrationService',
-    'MigrationReport',
     'CourseService',
     'StudentRecord',
     'CourseConfig',

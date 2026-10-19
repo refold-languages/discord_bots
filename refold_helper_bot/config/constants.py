@@ -242,7 +242,7 @@ ANTISPAM_RECORD_FILE = 'antispam_actions.json'
 ANTISPAM_CONFIG_FILE = 'antispam_config.json'
 
 # --- Test mode -------------------------------------------------------------
-# In test mode (toggled at runtime via `!moderation testmode on`), no one is
+# In test mode (toggled at runtime via `/moderation testmode on`), no one is
 # banned/timed-out/deleted. Instead the bot reacts to any message that WOULD
 # have been actioned, so staff can safely verify detection. Applies to BOTH
 # the anti-spam detectors and the honeypot.
@@ -275,5 +275,4 @@ PROJECTS_FILE = 'projects.json'
 LANGUAGE_ROLES_FILE = 'language_roles.tsv'
 VIDEO_LINKS_FILE = 'video_links.tsv'
 CROWDSOURCE_DOCS_FILE = 'crowdsource_docs.tsv'
-UNIQUE_USERS_FILE = 'unique_users.tsv'
 REACTION_ROLES_FILE = 'reaction_roles.tsv'

@@ -128,7 +128,7 @@ class SpamDetectionService(BaseService):
     def is_enabled_for_guild(self, guild_id: int) -> bool:
         """True if anti-spam should run in this guild (scope + overrides).
 
-        An explicit per-guild override (set via ``!antispam on|off``) is
+        An explicit per-guild override (set via ``/antispam``) is
         authoritative in BOTH directions: it can force-enable a server that
         isn't in the default network (e.g. a test server) or disable one that
         is. With no override, membership in ``ANTISPAM_GUILD_IDS`` decides.

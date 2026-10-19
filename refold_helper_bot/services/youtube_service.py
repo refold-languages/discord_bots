@@ -476,7 +476,7 @@ class YouTubeService(BaseService):
         """
         api_key = self.data_manager.get_api_key("deepseek")
         if not api_key:
-            raise DataError("Deepseek API key not found. Use !loadkey deepseek <key> to set it.")
+            raise DataError("Deepseek API key not found. Use /loadkey to set it.")
         
         # Stage 1: Validate and log text processing
         text_bytes = len(text.encode('utf-8'))

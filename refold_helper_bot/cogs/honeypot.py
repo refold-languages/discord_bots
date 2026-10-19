@@ -10,6 +10,7 @@ can post the warning message itself.
 """
 
 import discord
+from discord import app_commands
 from discord.ext import commands
 
 from services import HoneypotService, enforcement_state
@@ -178,17 +179,17 @@ class Honeypot(commands.Cog):
             self.logger.error("honeypot_log_send_failed",
                               error=str(e), error_type=type(e).__name__)
 
-    @commands.command(name='honeypotlog',
-                      help='Show the most recent spam honeypot bans.',
-                      category='General Commands')
-    @commands.has_permissions(ban_members=True)
-    async def honeypot_log(self, ctx, count: int = 10):
+    @app_commands.command(name='honeypotlog', description='Show the most recent spam honeypot bans')
+    @app_commands.describe(count='How many bans to show (1-25)')
+    @app_commands.default_permissions(ban_members=True)
+    @app_commands.checks.has_permissions(ban_members=True)
+    async def honeypot_log(self, interaction: discord.Interaction,
+                           count: app_commands.Range[int, 1, 25] = 10):
         """List recent honeypot bans so staff can review who/why/when."""
-        count = max(1, min(count, 25))
         records = self.honeypot_service.get_ban_records()
 
         if not records:
-            await ctx.send("No honeypot bans recorded yet.")
+            await interaction.response.send_message("No honeypot bans recorded yet.", ephemeral=True)
             return
 
         recent = records[-count:][::-1]
@@ -203,13 +204,7 @@ class Honeypot(commands.Cog):
                 value=f"{r.get('timestamp', '?')} — #{r.get('channel_name', '?')}",
                 inline=False,
             )
-        await ctx.send(embed=embed)
-
-    @honeypot_log.error
-    async def honeypot_log_error(self, ctx, error):
-        """Quietly inform users who lack permission."""
-        if isinstance(error, commands.MissingPermissions):
-            await ctx.send("You need the Ban Members permission to use this.")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 async def setup(bot):

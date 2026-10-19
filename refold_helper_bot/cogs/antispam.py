@@ -24,8 +24,10 @@ ordinary members behaving like spam bots.
 """
 
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 
 import discord
+from discord import app_commands
 from discord.ext import commands
 
 from services import (
@@ -413,17 +415,17 @@ class AntiSpam(commands.Cog):
     # ------------------------------------------------------------------
     # Staff commands
     # ------------------------------------------------------------------
-    @commands.command(name='spamstats',
-                      help='Show the most recent automatic anti-spam actions.',
-                      category='General Commands')
-    @commands.has_permissions(ban_members=True)
-    async def spam_stats(self, ctx, count: int = 10):
+    @app_commands.command(name='spamstats', description='Show the most recent automatic anti-spam actions')
+    @app_commands.describe(count='How many actions to show (1-25)')
+    @app_commands.default_permissions(ban_members=True)
+    @app_commands.checks.has_permissions(ban_members=True)
+    async def spam_stats(self, interaction: discord.Interaction,
+                         count: app_commands.Range[int, 1, 25] = 10):
         """List recent anti-spam actions so staff can review who/why/when."""
-        count = max(1, min(count, 25))
         records = self.spam_service.get_action_records()
 
         if not records:
-            await ctx.send("No anti-spam actions recorded yet.")
+            await interaction.response.send_message("No anti-spam actions recorded yet.", ephemeral=True)
             return
 
         recent = records[-count:][::-1]
@@ -440,92 +442,93 @@ class AntiSpam(commands.Cog):
                 value=f"{r.get('timestamp', '?')} — #{r.get('channel_name', '?')}\n{why}"[:1024],
                 inline=False,
             )
-        await ctx.send(embed=embed)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @commands.command(name='antispam',
-                      help='Toggle anti-spam for this server: !antispam on|off',
-                      category='General Commands')
-    @commands.has_permissions(manage_guild=True)
-    @commands.guild_only()
-    async def antispam_toggle(self, ctx, state: str = ''):
+    @app_commands.command(name='antispam', description='Show or toggle anti-spam for this server')
+    @app_commands.describe(state='Turn anti-spam on or off (omit to see the current state)')
+    @app_commands.choices(state=[app_commands.Choice(name='on', value='on'),
+                                 app_commands.Choice(name='off', value='off')])
+    @app_commands.default_permissions(manage_guild=True)
+    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.guild_only()
+    async def antispam_toggle(self, interaction: discord.Interaction,
+                              state: Optional[app_commands.Choice[str]] = None):
         """Enable or disable heuristic anti-spam in the current guild."""
-        state = state.strip().lower()
-        if state not in ('on', 'off'):
-            enabled = self.spam_service.is_enabled_for_guild(ctx.guild.id)
-            await ctx.send(
+        if state is None:
+            enabled = self.spam_service.is_enabled_for_guild(interaction.guild_id)
+            await interaction.response.send_message(
                 f"Anti-spam is currently **{'on' if enabled else 'off'}** here. "
-                f"Use `!antispam on` or `!antispam off` to change it."
+                f"Use `/antispam state:on` or `/antispam state:off` to change it.",
+                ephemeral=True
             )
             return
 
-        enabled = state == 'on'
-        if self.spam_service.set_guild_enabled(ctx.guild.id, enabled):
-            self.logger.info("antispam_toggled", guild_id=ctx.guild.id,
-                             enabled=enabled, by_user=ctx.author.id)
-            await ctx.send(f"Anti-spam is now **{state}** for this server.")
+        enabled = state.value == 'on'
+        if self.spam_service.set_guild_enabled(interaction.guild_id, enabled):
+            self.logger.info("antispam_toggled", guild_id=interaction.guild_id,
+                             enabled=enabled, by_user=interaction.user.id)
+            await interaction.response.send_message(f"Anti-spam is now **{state.value}** for this server.")
         else:
-            await ctx.send("Failed to save the setting — check the logs.")
+            await interaction.response.send_message("Failed to save the setting — check the logs.",
+                                                    ephemeral=True)
 
     # --- Global kill switch + test mode (covers honeypot too) ----------
-    @commands.group(name='moderation', invoke_without_command=True,
-                    help='Master control for all spam/ban enforcement. '
-                         'Subcommands: status, enable, disable, testmode on|off',
-                    category='General Commands')
-    @commands.has_permissions(manage_guild=True)
-    async def moderation(self, ctx):
-        """Show the current global enforcement state."""
-        await self._send_mod_status(ctx)
+    moderation = app_commands.Group(
+        name='moderation',
+        description='Master control for all automatic spam/ban enforcement',
+        default_permissions=discord.Permissions(manage_guild=True),
+    )
 
-    @moderation.command(name='status', help='Show the enforcement state.')
-    @commands.has_permissions(manage_guild=True)
-    async def moderation_status(self, ctx):
-        await self._send_mod_status(ctx)
+    @moderation.command(name='status', description='Show the enforcement state')
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def moderation_status(self, interaction: discord.Interaction):
+        await self._send_mod_status(interaction)
 
-    @moderation.command(name='disable',
-                        help='EMERGENCY: turn OFF all automatic bans/timeouts.')
-    @commands.has_permissions(manage_guild=True)
-    async def moderation_disable(self, ctx):
+    @moderation.command(name='disable', description='EMERGENCY: turn OFF all automatic bans/timeouts')
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def moderation_disable(self, interaction: discord.Interaction):
         enforcement_state.set_enabled(False)
-        self.logger.warning("moderation_emergency_disabled", by_user=ctx.author.id)
-        await ctx.send("🛑 **EMERGENCY STOP.** All automatic spam/ban enforcement "
-                       "is now OFF (anti-spam **and** honeypot). Re-enable with "
-                       "`!moderation enable`.")
+        self.logger.warning("moderation_emergency_disabled", by_user=interaction.user.id)
+        await interaction.response.send_message(
+            "🛑 **EMERGENCY STOP.** All automatic spam/ban enforcement "
+            "is now OFF (anti-spam **and** honeypot). Re-enable with "
+            "`/moderation enable`.")
 
-    @moderation.command(name='enable',
-                        help='Turn automatic bans/timeouts back ON.')
-    @commands.has_permissions(manage_guild=True)
-    async def moderation_enable(self, ctx):
+    @moderation.command(name='enable', description='Turn automatic bans/timeouts back ON')
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def moderation_enable(self, interaction: discord.Interaction):
         enforcement_state.set_enabled(True)
-        self.logger.warning("moderation_re_enabled", by_user=ctx.author.id)
-        await ctx.send("✅ Automatic spam/ban enforcement is now **ON**.")
+        self.logger.warning("moderation_re_enabled", by_user=interaction.user.id)
+        await interaction.response.send_message("✅ Automatic spam/ban enforcement is now **ON**.")
 
-    @moderation.command(name='testmode',
-                        help='Detect-only mode: react instead of acting. '
-                             'Usage: !moderation testmode on|off')
-    @commands.has_permissions(manage_guild=True)
-    async def moderation_testmode(self, ctx, state: str = ''):
-        state = state.strip().lower()
-        if state not in ('on', 'off'):
-            await self._send_mod_status(ctx)
+    @moderation.command(name='testmode', description='Detect-only mode: react instead of acting')
+    @app_commands.describe(state='Turn test mode on or off (omit to see the current state)')
+    @app_commands.choices(state=[app_commands.Choice(name='on', value='on'),
+                                 app_commands.Choice(name='off', value='off')])
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def moderation_testmode(self, interaction: discord.Interaction,
+                                  state: Optional[app_commands.Choice[str]] = None):
+        if state is None:
+            await self._send_mod_status(interaction)
             return
-        enforcement_state.set_test_mode(state == 'on')
+        enforcement_state.set_test_mode(state.value == 'on')
         self.logger.warning("moderation_test_mode_set",
-                            test_mode=(state == 'on'), by_user=ctx.author.id)
-        if state == 'on':
-            await ctx.send(
+                            test_mode=(state.value == 'on'), by_user=interaction.user.id)
+        if state.value == 'on':
+            await interaction.response.send_message(
                 f"🧪 **Test mode ON.** No one will be banned, timed out, or have "
                 f"messages deleted. Triggering messages get a {ANTISPAM_TEST_REACTION_BAN}"
                 f"/{ANTISPAM_TEST_REACTION_TIMEOUT} reaction and a `[TEST]` mod-log entry. "
                 f"Applies to anti-spam and the honeypot — **staff included while testing**, "
                 f"so you can verify it yourself.")
         else:
-            await ctx.send("✅ **Test mode OFF.** Enforcement is live again.")
+            await interaction.response.send_message("✅ **Test mode OFF.** Enforcement is live again.")
 
-    async def _send_mod_status(self, ctx):
+    async def _send_mod_status(self, interaction: discord.Interaction):
         """Report the global enforcement + test-mode state."""
         snap = enforcement_state.snapshot()
-        guild_on = (ctx.guild is not None
-                    and self.spam_service.is_enabled_for_guild(ctx.guild.id))
+        guild_on = (interaction.guild_id is not None
+                    and self.spam_service.is_enabled_for_guild(interaction.guild_id))
         embed = discord.Embed(
             title='🛡️ Moderation enforcement status',
             color=0x2ECC71 if snap['enabled'] else 0xE74C3C,
@@ -536,22 +539,10 @@ class AntiSpam(commands.Cog):
         embed.add_field(name='Test mode',
                         value='🧪 ON (detect-only)' if snap['test_mode'] else 'off',
                         inline=True)
-        if ctx.guild is not None:
+        if interaction.guild_id is not None:
             embed.add_field(name='Anti-spam (this server)',
                             value='on' if guild_on else 'off', inline=True)
-        await ctx.send(embed=embed)
-
-    @spam_stats.error
-    @antispam_toggle.error
-    @moderation.error
-    @moderation_status.error
-    @moderation_enable.error
-    @moderation_disable.error
-    @moderation_testmode.error
-    async def _perm_error(self, ctx, error):
-        """Quietly inform users who lack permission."""
-        if isinstance(error, commands.MissingPermissions):
-            await ctx.send("You don't have permission to use this command.")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 def _looks_like_image(filename: str) -> bool:

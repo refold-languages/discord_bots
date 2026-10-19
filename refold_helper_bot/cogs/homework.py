@@ -3,12 +3,16 @@ Homework cog for Refold Helper Bot.
 Handles automated homework posting and scheduling.
 """
 
+from typing import List, Optional
+
 import discord
+import pytz
+from discord import app_commands
 from discord.ext import commands
-from typing import Optional
 
 from services import HomeworkService, CourseService
 from utils import get_logger, monitor_command, ValidationError, DiscordError
+from utils.interactions import respond, confirm, read_text_attachment
 
 class Homework(commands.Cog):
     """Homework scheduling and automation for courses."""
@@ -33,33 +37,25 @@ class Homework(commands.Cog):
         self.homework_service.stop_scheduler()
         self.logger.info("homework_cog_unloaded")
     
-    def cog_check(self, ctx):
-        """Global check - only works in allowed course servers."""
-        return (ctx.guild and 
-                self.course_service.is_course_server(ctx.guild.id))
-    
-    async def cog_command_error(self, ctx, error):
-        """Handle homework cog specific errors."""
-        if isinstance(error, commands.CheckFailure):
-            # Don't send any message - we want these commands to be invisible to other servers
-            return
-        
-        # Let the global error handler deal with other errors
-        raise error
-    
-    @commands.group(name='homework', invoke_without_command=True)
-    @commands.has_permissions(administrator=True)
-    async def homework_group(self, ctx):
-        """Homework management commands."""
-        await ctx.send("Use `!homework upload`, `!homework status`, `!homework list`, or `!homework cancel`")
-    
-    @homework_group.command(name='upload')
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        """Homework commands only work in the allowed course servers."""
+        if interaction.guild_id is None or not self.course_service.is_course_server(interaction.guild_id):
+            raise app_commands.CheckFailure("Homework commands are not enabled in this server.")
+        return True
+
+    homework_group = app_commands.Group(
+        name='homework', description='Scheduled homework posts',
+        default_permissions=discord.Permissions(administrator=True), guild_only=True)
+
+    @homework_group.command(name='upload', description='Upload a homework schedule from a CSV file')
+    @app_commands.describe(course_name='Course the homework belongs to',
+                           forum='Forum channel to post the homework in',
+                           file='CSV with columns: title,text,post_date,post_time,course_day')
+    @app_commands.checks.has_permissions(administrator=True)
     @monitor_command()
-    async def upload_homework(self, ctx, course_name: str, forum_channel_id: int, *, csv_content: str = None):
-        """Upload homework schedule from CSV content.
-        
-        Usage: !homework upload "Course Name" 1234567890123456789
-        Then paste CSV content in next message, or include after command.
+    async def upload_homework(self, interaction: discord.Interaction, course_name: str,
+                              forum: discord.ForumChannel, file: discord.Attachment):
+        """Upload homework schedule from an uploaded CSV file.
         
         CSV Format: title,text,post_date,post_time,course_day
         Example:
@@ -67,96 +63,67 @@ class Homework(commands.Cog):
         "Week 1 Homework","Complete exercises 1-5\\n\\n**Due:** Friday 11:59 PM","2025-08-15","09:00","1"
         """
         # Check if this is a backend channel
-        if not self.course_service.is_backend_channel(ctx.channel.id):
-            await ctx.send("❌ Homework uploads are only allowed in backend channels.")
+        if not self.course_service.is_backend_channel(interaction.channel_id):
+            await interaction.response.send_message("❌ Homework uploads are only allowed in backend channels.",
+                                                    ephemeral=True)
             return
         
         # Verify course exists
         course = self.course_service.get_course(course_name)
         if not course:
-            await ctx.send(f"❌ Course '{course_name}' not found. Use `!course add` to create it first.")
+            await interaction.response.send_message(
+                f"❌ Course '{course_name}' not found. Use `/course add` to create it first.", ephemeral=True)
             return
         
-        # Get and validate forum channel
+        # Check if bot has permissions
+        permissions = forum.permissions_for(interaction.guild.me)
+        if not (permissions.create_public_threads and permissions.send_messages):
+            await interaction.response.send_message(
+                f"❌ I don't have permission to create threads in {forum.name}.", ephemeral=True)
+            return
+
+        await interaction.response.defer(thinking=True)
         try:
-            forum_channel = self.bot.get_channel(forum_channel_id)
-            if not forum_channel:
-                await ctx.send(f"❌ Channel with ID {forum_channel_id} not found.")
-                return
-            
-            if not isinstance(forum_channel, discord.ForumChannel):
-                await ctx.send(f"❌ Channel {forum_channel.name} (ID: {forum_channel_id}) is not a forum channel.")
-                return
-            
-            # Check if bot has permissions
-            permissions = forum_channel.permissions_for(ctx.guild.me)
-            if not (permissions.create_public_threads and permissions.send_messages):
-                await ctx.send(f"❌ I don't have permission to create threads in {forum_channel.name}.")
-                return
-            
-        except Exception as e:
-            await ctx.send(f"❌ Error accessing channel {forum_channel_id}: {str(e)}")
+            csv_content = (await read_text_attachment(file)).strip()
+        except ValueError as e:
+            await respond(interaction, f"❌ {e}")
             return
-        
-        # Get CSV content if not provided
-        if not csv_content:
-            await ctx.send("📋 Please paste your CSV content (you have 60 seconds):")
-            
-            def check(message):
-                return (message.author == ctx.author and 
-                       message.channel == ctx.channel)
-            
-            try:
-                csv_message = await self.bot.wait_for('message', timeout=60.0, check=check)
-                csv_content = csv_message.content
-            except:
-                await ctx.send("⏰ Timed out waiting for CSV content.")
-                return
-        
-        # Clean up CSV content
-        csv_content = csv_content.strip()
-        if csv_content.startswith('```'):
-            csv_content = '\n'.join(csv_content.split('\n')[1:-1])
-        
-        # Upload the schedule
-        progress_msg = await ctx.send("⏳ Processing homework schedule...")
         
         success, message, warnings = await self.homework_service.upload_homework_schedule(
-            course_name, csv_content, forum_channel_id
+            course_name, csv_content, forum.id
         )
         
         if success:
             embed = discord.Embed(title="✅ Homework Schedule Uploaded", color=0x00ff00)
             embed.add_field(name="Result", value=message, inline=False)
             embed.add_field(name="Course", value=course_name, inline=True)
-            embed.add_field(name="Forum Channel", value=f"{forum_channel.name} (ID: {forum_channel_id})", inline=True)
+            embed.add_field(name="Forum Channel", value=f"{forum.name} (ID: {forum.id})", inline=True)
             
             if warnings:
                 embed.add_field(
                     name="⚠️ Warnings",
-                    value="\n".join(warnings[:5]),  # Limit to first 5
+                    value="\n".join(warnings[:5])[:1024],  # Limit to first 5
                     inline=False
                 )
                 if len(warnings) > 5:
                     embed.add_field(name="...", value=f"and {len(warnings) - 5} more warnings", inline=False)
-            
-            await progress_msg.edit(content="", embed=embed)
         else:
             embed = discord.Embed(title="❌ Upload Failed", color=0xff0000)
-            embed.add_field(name="Error", value=message, inline=False)
+            embed.add_field(name="Error", value=message[:1024], inline=False)
             
             if warnings:
                 embed.add_field(
                     name="Issues Found",
-                    value="\n".join(warnings[:10]),
+                    value="\n".join(warnings[:10])[:1024],
                     inline=False
                 )
-            
-            await progress_msg.edit(content="", embed=embed)
+        
+        await respond(interaction, embed=embed)
     
-    @homework_group.command(name='status')
+    @homework_group.command(name='status', description='Show homework scheduling status')
+    @app_commands.checks.has_permissions(administrator=True)
     @monitor_command()
-    async def homework_status(self, ctx, course_name: str = None):
+    async def homework_status(self, interaction: discord.Interaction):
         """Show homework scheduling status."""
         summary = self.homework_service.get_schedule_summary()
         
@@ -174,7 +141,6 @@ class Homework(commands.Cog):
         # Next assignment
         if summary['next_assignment']:
             from datetime import datetime
-            import pytz
             
             next_dt = datetime.fromisoformat(summary['next_assignment'])
             pacific = pytz.timezone('US/Pacific')
@@ -200,20 +166,18 @@ class Homework(commands.Cog):
                 course_text.append(f"{course}: {count}")
             embed.add_field(name="By Course", value="\n".join(course_text), inline=True)
         
-        await ctx.send(embed=embed)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
     
-    @homework_group.command(name='list')
+    @homework_group.command(name='list', description='List homework assignments')
+    @app_commands.describe(course_name='Only this course (default: all)', status='Which assignments to show')
+    @app_commands.choices(status=[app_commands.Choice(name=s, value=s)
+                                  for s in ("pending", "posted", "failed", "all")])
+    @app_commands.checks.has_permissions(administrator=True)
     @monitor_command()
-    async def list_homework(self, ctx, course_name: str = None, status: str = "pending"):
-        """List homework assignments.
-        
-        Usage: !homework list [course_name] [status]
-        Status can be: pending, posted, failed, all
-        """
-        if status not in ["pending", "posted", "failed", "all"]:
-            await ctx.send("❌ Status must be one of: pending, posted, failed, all")
-            return
-        
+    async def list_homework(self, interaction: discord.Interaction, course_name: Optional[str] = None,
+                            status: str = "pending"):
+        """List homework assignments."""
+
         if status == "all":
             assignments = self.homework_service.get_all_assignments(course_name)
         else:
@@ -224,7 +188,8 @@ class Homework(commands.Cog):
         
         if not assignments:
             course_filter = f" for {course_name}" if course_name else ""
-            await ctx.send(f"📋 No {status} assignments found{course_filter}.")
+            await interaction.response.send_message(f"📋 No {status} assignments found{course_filter}.",
+                                                    ephemeral=True)
             return
         
         # Create paginated embed
@@ -241,7 +206,6 @@ class Homework(commands.Cog):
         
         for assignment in display_assignments:
             # Format time
-            import pytz
             pacific = pytz.timezone('US/Pacific')
             scheduled_pacific = assignment.scheduled_datetime.astimezone(pacific)
             
@@ -251,7 +215,7 @@ class Homework(commands.Cog):
             value += f"**Status:** {assignment.status}"
             
             if assignment.status == "posted" and assignment.thread_id:
-                value += f"\n**Thread:** [View](<https://discord.com/channels/{ctx.guild.id}/{assignment.thread_id}>)"
+                value += f"\n**Thread:** [View](<https://discord.com/channels/{interaction.guild_id}/{assignment.thread_id}>)"
             elif assignment.status == "failed" and assignment.error_message:
                 value += f"\n**Error:** {assignment.error_message[:100]}"
             
@@ -268,21 +232,21 @@ class Homework(commands.Cog):
                 inline=False
             )
         
-        await ctx.send(embed=embed)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
     
-    @homework_group.command(name='cancel')
+    @homework_group.command(name='cancel', description='Cancel a pending homework assignment')
+    @app_commands.describe(assignment_title='Title (or part of it) of the pending assignment')
+    @app_commands.checks.has_permissions(administrator=True)
     @monitor_command()
-    async def cancel_homework(self, ctx, *, assignment_title: str):
-        """Cancel a pending homework assignment by title.
-        
-        Usage: !homework cancel "Assignment Title"
-        """
+    async def cancel_homework(self, interaction: discord.Interaction, assignment_title: str):
+        """Cancel a pending homework assignment by title."""
         # Find assignment by title
         pending = self.homework_service.get_pending_assignments()
         matching = [a for a in pending if assignment_title.lower() in a.title.lower()]
         
         if not matching:
-            await ctx.send(f"❌ No pending assignment found matching '{assignment_title}'")
+            await interaction.response.send_message(
+                f"❌ No pending assignment found matching '{assignment_title}'", ephemeral=True)
             return
         
         if len(matching) > 1:
@@ -299,7 +263,7 @@ class Homework(commands.Cog):
                 value="Please be more specific with the assignment title.",
                 inline=False
             )
-            await ctx.send(embed=embed)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         
         assignment = matching[0]
@@ -314,7 +278,6 @@ class Homework(commands.Cog):
         embed.add_field(name="Course", value=assignment.course_name, inline=True)
         embed.add_field(name="Day", value=str(assignment.course_day), inline=True)
         
-        import pytz
         pacific = pytz.timezone('US/Pacific')
         scheduled_pacific = assignment.scheduled_datetime.astimezone(pacific)
         embed.add_field(
@@ -323,56 +286,33 @@ class Homework(commands.Cog):
             inline=True
         )
         
-        embed.set_footer(text="React with ✅ to confirm or ❌ to cancel")
-        
-        message = await ctx.send(embed=embed)
-        await message.add_reaction("✅")
-        await message.add_reaction("❌")
-        
-        def check(reaction, user):
-            return (user == ctx.author and 
-                    str(reaction.emoji) in ["✅", "❌"] and 
-                    reaction.message.id == message.id)
-        
-        try:
-            reaction, user = await self.bot.wait_for('reaction_add', timeout=30.0, check=check)
-            
-            if str(reaction.emoji) == "✅":
-                success, result_message = await self.homework_service.cancel_assignment(assignment.homework_id)
-                
-                if success:
-                    await ctx.send(f"✅ {result_message}")
-                else:
-                    await ctx.send(f"❌ {result_message}")
-            else:
-                await ctx.send("❌ Cancellation cancelled.")
-                
-        except:
-            await ctx.send("⏰ Cancellation timed out. No changes made.")
-        
-        # Clean up the confirmation message
-        try:
-            await message.delete()
-        except discord.NotFound:
-            pass
+        if not await confirm(interaction, None, embed=embed, timeout=30.0, confirm_label='Cancel assignment'):
+            return
+
+        success, result_message = await self.homework_service.cancel_assignment(assignment.homework_id)
+        if success:
+            await respond(interaction, f"✅ {result_message}", ephemeral=True)
+        else:
+            await respond(interaction, f"❌ {result_message}", ephemeral=True)
     
-    @homework_group.command(name='preview')
+    @homework_group.command(name='preview', description='Preview a pending homework post')
+    @app_commands.describe(assignment_title='Title (or part of it) of the pending assignment')
+    @app_commands.checks.has_permissions(administrator=True)
     @monitor_command()
-    async def preview_homework(self, ctx, *, assignment_title: str):
-        """Preview what a homework assignment will look like when posted.
-        
-        Usage: !homework preview "Assignment Title"
-        """
+    async def preview_homework(self, interaction: discord.Interaction, assignment_title: str):
+        """Preview what a homework assignment will look like when posted."""
         # Find assignment by title
         pending = self.homework_service.get_pending_assignments()
         matching = [a for a in pending if assignment_title.lower() in a.title.lower()]
         
         if not matching:
-            await ctx.send(f"❌ No pending assignment found matching '{assignment_title}'")
+            await interaction.response.send_message(
+                f"❌ No pending assignment found matching '{assignment_title}'", ephemeral=True)
             return
         
         if len(matching) > 1:
-            await ctx.send(f"❌ Multiple assignments found. Please be more specific.")
+            await interaction.response.send_message(
+                f"❌ Multiple assignments found. Please be more specific.", ephemeral=True)
             return
         
         assignment = matching[0]
@@ -392,7 +332,6 @@ class Homework(commands.Cog):
             embed.add_field(name="...", value="(content truncated for preview)", inline=False)
         
         # Show scheduling info
-        import pytz
         pacific = pytz.timezone('US/Pacific')
         scheduled_pacific = assignment.scheduled_datetime.astimezone(pacific)
         
@@ -402,7 +341,25 @@ class Homework(commands.Cog):
         embed.add_field(name="Course", value=assignment.course_name, inline=True)
         embed.add_field(name="Course Day", value=str(assignment.course_day), inline=True)
         
-        await ctx.send(embed=embed)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @upload_homework.autocomplete('course_name')
+    @list_homework.autocomplete('course_name')
+    async def _course_autocomplete(self, interaction: discord.Interaction,
+                                   current: str) -> List[app_commands.Choice[str]]:
+        current = current.lower()
+        names = [c.name for c in self.course_service.get_all_courses().values()
+                 if current in c.name.lower()]
+        return [app_commands.Choice(name=n[:100], value=n[:100]) for n in names[:25]]
+
+    @cancel_homework.autocomplete('assignment_title')
+    @preview_homework.autocomplete('assignment_title')
+    async def _assignment_autocomplete(self, interaction: discord.Interaction,
+                                       current: str) -> List[app_commands.Choice[str]]:
+        current = current.lower()
+        titles = [a.title for a in self.homework_service.get_pending_assignments()
+                  if current in a.title.lower()]
+        return [app_commands.Choice(name=t[:100], value=t[:100]) for t in titles[:25]]
 
 
 async def setup(bot):

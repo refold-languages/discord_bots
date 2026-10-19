@@ -8,9 +8,33 @@ from typing import Optional, Dict, Any, Callable
 from datetime import datetime
 
 import discord
+from discord import app_commands
 from discord.ext import commands
 
 from .logger import get_logger
+
+
+def _invoker(ctx_or_interaction):
+    """The user behind a prefix Context or a slash-command Interaction."""
+    if isinstance(ctx_or_interaction, discord.Interaction):
+        return ctx_or_interaction.user
+    return ctx_or_interaction.author
+
+
+def _command_name(ctx_or_interaction) -> str:
+    command = getattr(ctx_or_interaction, 'command', None)
+    return getattr(command, 'qualified_name', None) or getattr(command, 'name', None) or "unknown"
+
+
+async def _send_error(ctx_or_interaction, content: str) -> None:
+    """Report an error privately for slash commands, in-channel for prefix ones."""
+    if isinstance(ctx_or_interaction, discord.Interaction):
+        if ctx_or_interaction.response.is_done():
+            await ctx_or_interaction.followup.send(content, ephemeral=True)
+        else:
+            await ctx_or_interaction.response.send_message(content, ephemeral=True)
+    else:
+        await ctx_or_interaction.send(content)
 
 
 class BotError(Exception):
@@ -136,17 +160,22 @@ class ErrorHandler:
         """Register a recovery strategy for a specific error type."""
         self.recovery_strategies[error_type] = strategy
     
-    async def handle_command_error(self, ctx: commands.Context, error: Exception) -> bool:
+    async def handle_command_error(self, ctx, error: Exception) -> bool:
         """
         Handle command errors with appropriate logging and user feedback.
         
         Args:
-            ctx: Command context
+            ctx: Command context, or the Interaction of a slash command
             error: The exception that occurred
             
         Returns:
             True if error was handled, False if it should propagate
         """
+        # Slash command bodies' exceptions arrive wrapped; report the real one.
+        if isinstance(error, (app_commands.CommandInvokeError, commands.CommandInvokeError)) \
+                and error.original is not None:
+            error = error.original
+
         # Convert to BotError if needed
         if not isinstance(error, BotError):
             error = self._convert_to_bot_error(error)
@@ -154,8 +183,8 @@ class ErrorHandler:
         # Log the error
         self.logger.error(
             "command_error_occurred",
-            command=ctx.command.name if ctx.command else "unknown",
-            user_id=ctx.author.id,
+            command=_command_name(ctx),
+            user_id=_invoker(ctx).id,
             guild_id=ctx.guild.id if ctx.guild else None,
             error_data=error.to_dict()
         )
@@ -177,7 +206,7 @@ class ErrorHandler:
         
         # Send user-friendly error message
         try:
-            await ctx.send(f"❌ {error.user_message}")
+            await _send_error(ctx, f"❌ {error.user_message}")
         except discord.DiscordException as send_error:
             self.logger.error(
                 "failed_to_send_error_message",
@@ -219,6 +248,8 @@ class ErrorHandler:
     
     def _convert_to_bot_error(self, error: Exception) -> BotError:
         """Convert standard exceptions to BotError instances."""
+        if isinstance(error, app_commands.AppCommandError):
+            return self._convert_app_command_error(error)
         if isinstance(error, commands.CommandError):
             return self._convert_command_error(error)
         elif isinstance(error, discord.DiscordException):
@@ -251,7 +282,7 @@ class ErrorHandler:
         elif isinstance(error, commands.CommandNotFound):
             return BotError(
                 str(error),
-                user_message="Command not found. Use `!help` to see available commands.",
+                user_message="Command not found. Type `/` to see available commands.",
                 recoverable=False
             )
         elif isinstance(error, commands.MissingRequiredArgument):
@@ -274,6 +305,27 @@ class ErrorHandler:
         else:
             return BotError(str(error))
     
+    def _convert_app_command_error(self, error: app_commands.AppCommandError) -> BotError:
+        """Convert slash-command check/transform errors to BotError instances."""
+        if isinstance(error, app_commands.MissingPermissions):
+            return BotError(str(error), user_message="You don't have permission to use this command.",
+                            recoverable=False)
+        elif isinstance(error, app_commands.BotMissingPermissions):
+            return BotError(str(error),
+                            user_message="I don't have the required permissions to run this command.",
+                            recoverable=False)
+        elif isinstance(error, app_commands.NoPrivateMessage):
+            return BotError(str(error), user_message="This command can only be used in a server.",
+                            recoverable=False)
+        elif isinstance(error, app_commands.CommandOnCooldown):
+            return RateLimitError(str(error), retry_after=round(error.retry_after, 1))
+        elif isinstance(error, app_commands.TransformerError):
+            return ValidationError(str(error))
+        elif isinstance(error, app_commands.CheckFailure):
+            return BotError(str(error), user_message="You can't use this command here.",
+                            recoverable=False)
+        return BotError(str(error))
+
     def _track_error(self, error: BotError):
         """Track error frequency for monitoring."""
         error_key = f"{error.__class__.__name__}:{hash(error.message) % 1000}"
@@ -313,7 +365,7 @@ async def handle_error(ctx_or_event: str, error: Exception, **context) -> bool:
     Returns:
         True if error was handled
     """
-    if isinstance(ctx_or_event, commands.Context):
+    if isinstance(ctx_or_event, (commands.Context, discord.Interaction)):
         return await error_handler.handle_command_error(ctx_or_event, error)
     else:
         return await error_handler.handle_event_error(ctx_or_event, error, **context)
