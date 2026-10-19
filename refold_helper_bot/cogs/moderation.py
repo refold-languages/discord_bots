@@ -143,15 +143,22 @@ class Moderation(commands.Cog):
     @commands.Cog.listener()
     async def on_message_delete(self, message):
         """Log deleted messages to moderation channel."""
-        if message.guild.id in IGNORED_SERVER_IDS:
-            return 
-        
+        if message.guild is None or message.guild.id in IGNORED_SERVER_IDS:
+            return
+        # Without the Message Content intent every message arrives with empty
+        # content, and Discord rejects an embed field with an empty value -
+        # there is nothing worth logging, so skip rather than 400 on each one.
+        if not message.content:
+            return
+
         embed = discord.Embed(
-            title=f'A message was deleted in {message.guild.name}', 
-            description='', 
+            title=f'A message was deleted in {message.guild.name}',
+            description='',
             color=0x4287f5
         )
-        embed.add_field(name='The deleted message is:', value=f'{message.content}', inline=True)
+        # Embed field values are capped at 1024 characters.
+        content = message.content if len(message.content) <= 1024 else message.content[:1021] + '...'
+        embed.add_field(name='The deleted message is:', value=content, inline=True)
         embed.add_field(name='It was sent by:', value=f'{message.author.mention}', inline=True)
         
         channel = self.bot.get_channel(DELETED_MESSAGE_LOG_CHANNEL_ID)

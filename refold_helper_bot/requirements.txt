@@ -1,0 +1,8 @@
+# 2.7.0+ knows the Feb 2026 permission splits and DAVE voice; stay on 2.x.
+discord.py>=2.7.1,<3
+aiohttp
+cryptography
+psutil
+pytz
+# Invoked as a CLI by services/youtube_service.py and cogs/resources.py.
+yt-dlp
