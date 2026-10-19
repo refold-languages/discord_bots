@@ -265,6 +265,38 @@ class RoleService(BaseService):
         
         return managed_roles
     
+    def get_synced_guild_roles(self) -> Dict[int, int]:
+        """Language-server guild ID -> main-server role ID for cross-server sync."""
+        self._ensure_initialized()
+        return {guild_id: int(role_id) for guild_id, role_id in self._role_mapping.items()
+                if guild_id != settings.MAIN_SERVER_ID}
+
+    def plan_role_sync(self, memberships: Dict[int, Optional[bool]],
+                       current_role_ids: Set[int]) -> Tuple[Set[int], Set[int]]:
+        """
+        Work out which main-server language roles a user should gain or lose.
+
+        Args:
+            memberships: language guild ID -> True (member), False (definitely
+                not a member) or None (unknown - bot not in that guild, or the
+                lookup failed). Unknown never causes a removal.
+            current_role_ids: role IDs the user holds in the main server
+
+        Returns:
+            (role IDs to add, role IDs to remove)
+        """
+        mapping = self.get_synced_guild_roles()
+        to_add, to_remove = set(), set()
+        for guild_id, is_member in memberships.items():
+            role_id = mapping.get(guild_id)
+            if role_id is None or is_member is None:
+                continue
+            if is_member and role_id not in current_role_ids:
+                to_add.add(role_id)
+            elif not is_member and role_id in current_role_ids:
+                to_remove.add(role_id)
+        return to_add, to_remove
+
     def get_language_roles_mapping(self) -> Dict[str, int]:
         """
         Get copy of current language roles mapping.

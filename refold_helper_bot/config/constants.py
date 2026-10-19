@@ -270,6 +270,30 @@ ANTISPAM_TEST_REACTION_BAN = '🚨'       # would have been banned
 ANTISPAM_TEST_REACTION_TIMEOUT = '⏳'   # would have been timed out
 
 # =============================================================================
+# BOT PERMISSIONS
+# =============================================================================
+
+# Server permissions the bot's features rely on. Checked per server at startup
+# so a missing grant is reported up front instead of surfacing later as a 403.
+REQUIRED_BOT_PERMISSIONS = [
+    'view_channel',
+    'send_messages',
+    'send_messages_in_threads',
+    'create_public_threads',
+    'embed_links',
+    'attach_files',
+    'add_reactions',
+    'read_message_history',
+    'manage_messages',          # anti-spam / honeypot message removal
+    'manage_roles',             # role sync, reaction roles, course roles
+    'manage_channels',          # community project channels
+    'create_instant_invite',    # community project invites
+    'ban_members',              # honeypot / anti-spam bans
+    'moderate_members',         # anti-spam timeouts
+    'manage_guild',             # /automod setup (Discord AutoMod rules)
+]
+
+# =============================================================================
 # ADMINISTRATION
 # =============================================================================
 

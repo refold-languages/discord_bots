@@ -342,6 +342,31 @@ class RefoldHelperBot(commands.Bot):
         print(f'Loaded cogs: {len(ready_cogs)} - {ready_cogs}')
         print('------')
 
+        self._check_guild_permissions()
+
+    def _check_guild_permissions(self):
+        """Report, per server, any permission the bot's features need but lacks."""
+        from config.constants import REQUIRED_BOT_PERMISSIONS
+
+        required = discord.Permissions(**{name: True for name in REQUIRED_BOT_PERMISSIONS})
+        invite = discord.utils.oauth_url(self.user.id, permissions=required,
+                                         scopes=('bot', 'applications.commands'))
+        any_missing = False
+        for guild in self.guilds:
+            have = guild.me.guild_permissions
+            if have.administrator:
+                continue
+            missing = [name for name in REQUIRED_BOT_PERMISSIONS if not getattr(have, name)]
+            if missing:
+                any_missing = True
+                self.logger.warning("bot_permissions_missing", guild_id=guild.id,
+                                    guild_name=guild.name, missing=missing)
+                print(f"⚠️  Missing permissions in {guild.name} ({guild.id}): {', '.join(missing)}")
+        if any_missing:
+            print(f"Re-invite with the full permission set: {invite}")
+        self.logger.info("bot_permission_check_completed", guilds=len(self.guilds),
+                         permissions_value=required.value)
+
     async def on_app_command_completion(self, interaction, command):
         """Called when a slash command completes successfully."""
         # Performance tracking is handled by the performance monitor

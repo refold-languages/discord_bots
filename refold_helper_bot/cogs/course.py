@@ -3,16 +3,41 @@ Course management cog for Refold Helper Bot.
 Handles course configuration and student management for the learning platform.
 """
 
+import asyncio
 from datetime import timezone
 from typing import List, Optional
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 from services import CourseService
 from utils import get_logger, monitor_command, ValidationError, DiscordError
 from utils.interactions import respond, confirm, read_text_attachment
+
+# Discord allows one member-search gateway request per guild every 30 seconds.
+MEMBER_QUERY_INTERVAL_SECONDS = 31
+# Pending students looked up per guild on each background pass.
+MEMBER_QUERY_BATCH = 10
+
+
+class EnrollView(discord.ui.View):
+    """Persistent "get my course role" button for course welcome channels.
+
+    Survives restarts (timeout=None + fixed custom_id, re-registered in
+    cog_load). It lets students enroll themselves, which needs no privileged
+    intent: the button press tells us exactly who they are.
+    """
+
+    def __init__(self, cog: 'Course'):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(label='Get my course role', style=discord.ButtonStyle.primary,
+                       custom_id='refold:course:enroll')
+    async def enroll_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.self_enroll(interaction)
+
 
 class Course(commands.Cog):
     """Course management for the Refold learning platform."""
@@ -25,7 +50,12 @@ class Course(commands.Cog):
     async def cog_load(self):
         """Initialize the course service when cog loads."""
         self.course_service.initialize()
+        self.bot.add_view(EnrollView(self))
+        self.resolve_pending_students.start()
         self.logger.info("course_cog_loaded")
+
+    async def cog_unload(self):
+        self.resolve_pending_students.cancel()
     
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         """Course commands only work in the allowed course servers."""
@@ -248,6 +278,21 @@ class Course(commands.Cog):
             embed.add_field(name="Channel List", value="\n".join(channel_list)[:1024], inline=False)
         
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @course_group.command(name='enrollbutton',
+                          description='Post a "Get my course role" button for students')
+    @app_commands.describe(channel='Channel to post the button in (default: this one)')
+    @app_commands.checks.has_permissions(administrator=True)
+    async def post_enroll_button(self, interaction: discord.Interaction,
+                                 channel: Optional[discord.TextChannel] = None):
+        """Post the persistent self-enrollment button."""
+        target = channel or interaction.channel
+        await target.send(
+            "👋 **Enrolled in a Refold course?** Press the button to get access to your course "
+            "channels. Your Discord username needs to match the one you gave when you signed up.",
+            view=EnrollView(self))
+        await interaction.response.send_message(f"✅ Posted the enrollment button in {target.mention}.",
+                                                ephemeral=True)
 
     # Roster Management Commands
     @roster_group.command(name='load', description='Load the student roster from a CSV file')
@@ -540,73 +585,141 @@ class Course(commands.Cog):
     async def _healthcheck_autocomplete(self, interaction: discord.Interaction, current: str):
         return await self._course_name_autocomplete(interaction, current)
     
+    # ------------------------------------------------------------------
+    # Enrollment
+    # ------------------------------------------------------------------
+    async def _enroll(self, guild: discord.Guild, member: discord.Member, student,
+                      *, source: str) -> Optional[discord.Role]:
+        """Give a roster student their course role. Returns the role on success."""
+        course = self.course_service.get_course(student.course_name)
+        role = guild.get_role(course.role_id) if course else None
+        if role is None:
+            self.logger.warning("enroll_course_role_missing", course=student.course_name,
+                                guild_id=guild.id)
+            return None
+        try:
+            if role not in member.roles:
+                await member.add_roles(role, reason=f"Course enrollment from roster ({source})")
+        except discord.HTTPException as e:
+            self.logger.error("failed_to_assign_role", user_id=member.id,
+                              course=student.course_name, error=str(e))
+            return None
+        await self.course_service.update_student_discord_id(student.discord_handle, member.id)
+        self.logger.info("auto_enrolled_from_roster", user_id=member.id, username=str(member),
+                         course=student.course_name, source=source)
+        return role
+
+    def _pending_student_for(self, member):
+        return self.course_service.find_pending_student(
+            username=member.name, display=str(member))
+
+    async def self_enroll(self, interaction: discord.Interaction):
+        """Shared body of /enroll and the enrollment button."""
+        guild = interaction.guild
+        if guild is None or not self.course_service.is_course_server(guild.id):
+            await interaction.response.send_message("Course enrollment isn't available here.",
+                                                    ephemeral=True)
+            return
+        student = self._pending_student_for(interaction.user)
+        if student is None:
+            await interaction.response.send_message(
+                "I couldn't find a pending enrollment for your Discord username "
+                f"(`{interaction.user.name}`). If you've already been enrolled you're all set; "
+                "otherwise please contact a coach so they can check the roster.", ephemeral=True)
+            return
+        role = await self._enroll(guild, interaction.user, student, source='self-serve')
+        if role is None:
+            await interaction.response.send_message(
+                "Something went wrong giving you your course role. Please contact a coach.",
+                ephemeral=True)
+            return
+        await interaction.response.send_message(
+            f"✅ Welcome to **{student.course_name}**! You now have the {role.mention} role.",
+            ephemeral=True)
+
+    @app_commands.command(name='enroll', description='Get your course role if you are on the roster')
+    @app_commands.guild_only()
+    async def enroll(self, interaction: discord.Interaction):
+        """Self-serve course enrollment."""
+        await self.self_enroll(interaction)
+
     async def _process_existing_members(self, interaction: discord.Interaction):
         """Process existing server members against the roster.
 
         Relies on the member cache, so it only finds anyone when the Guild
-        Members intent is enabled.
+        Members intent is enabled; otherwise students are picked up by the
+        enrollment button, /enroll, and the background resolver.
         """
+        if not self.bot.intents.members:
+            await respond(interaction, "ℹ️ Without the Guild Members intent I can't scan existing "
+                                       "members now - students can press the enrollment button "
+                                       "(`/course enrollbutton`), and I'll also look them up in the "
+                                       "background over the next while.")
+            return
+
         processed = 0
         assigned = 0
         guild = interaction.guild
-        
+
         for member in guild.members:
             if member.bot:
                 continue
-            
-            # Try to find student by username
-            student = self.course_service.find_student_by_discord(str(member))
-            if student and student.status == "pending":
-                # Get the course and role
-                course = self.course_service.get_course(student.course_name)
-                if course:
-                    role = guild.get_role(course.role_id)
-                    if role and role not in member.roles:
-                        try:
-                            await member.add_roles(role, reason="Auto-assignment from roster")
-                            await self.course_service.update_student_discord_id(str(member), member.id)
-                            assigned += 1
-                        except discord.HTTPException:
-                            pass
-                
+            student = self._pending_student_for(member)
+            if student:
                 processed += 1
-        
+                if await self._enroll(guild, member, student, source='roster load'):
+                    assigned += 1
+
         if processed > 0:
             await respond(interaction, f"🔄 Processed {processed} existing members, assigned {assigned} roles.")
-    
-    # Auto-role assignment on member join
+
+    @tasks.loop(minutes=15)
+    async def resolve_pending_students(self):
+        """Find pending students who are already in the server, without the members intent.
+
+        Looks each one up by username with a member search, which needs no
+        privileged intent but is limited to one request per guild every 30
+        seconds - so this works through the roster slowly, a batch at a time.
+        """
+        if self.bot.intents.members:
+            return  # on_member_join and roster-load scans cover it
+        for guild_id in self.course_service.ALLOWED_COURSE_SERVERS:
+            guild = self.bot.get_guild(guild_id)
+            if guild is None:
+                continue
+            pending = self.course_service.get_pending_students()[:MEMBER_QUERY_BATCH]
+            for student in pending:
+                query = student.discord_handle.lstrip('@').split('#')[0]
+                if not query:
+                    continue
+                try:
+                    candidates = await guild.query_members(query=query, limit=5)
+                except (asyncio.TimeoutError, discord.HTTPException) as e:
+                    self.logger.warning("pending_student_query_failed", guild_id=guild.id,
+                                        error=str(e), error_type=type(e).__name__)
+                    candidates = []
+                for member in candidates:
+                    if not member.bot and self.course_service.handle_matches(
+                            student.discord_handle, username=member.name, display=str(member)):
+                        await self._enroll(guild, member, student, source='background lookup')
+                        break
+                await asyncio.sleep(MEMBER_QUERY_INTERVAL_SECONDS)
+
+    @resolve_pending_students.before_loop
+    async def _before_resolve(self):
+        await self.bot.wait_until_ready()
+
+    # Auto-role assignment on member join (needs the Guild Members intent)
     @commands.Cog.listener()
     async def on_member_join(self, member):
         """Auto-assign course roles when students join."""
         if member.guild.id not in self.course_service.ALLOWED_COURSE_SERVERS:
             return
-        
         if member.bot:
             return
-        
-        # Check if this person is in our roster
-        student = self.course_service.find_student_by_discord(str(member))
-        
-        if student and student.status == "pending":
-            # Get the course and role
-            course = self.course_service.get_course(student.course_name)
-            if course:
-                role = member.guild.get_role(course.role_id)
-                if role:
-                    try:
-                        await member.add_roles(role, reason="Auto-assignment from roster")
-                        await self.course_service.update_student_discord_id(str(member), member.id)
-                        
-                        self.logger.info("auto_enrolled_from_roster",
-                                       user_id=member.id,
-                                       username=str(member),
-                                       course=student.course_name,
-                                       email=student.email)
-                    except discord.HTTPException as e:
-                        self.logger.error("failed_to_assign_role",
-                                        user_id=member.id,
-                                        course=student.course_name,
-                                        error=str(e))
+        student = self._pending_student_for(member)
+        if student:
+            await self._enroll(member.guild, member, student, source='member join')
 
 
 async def setup(bot):
