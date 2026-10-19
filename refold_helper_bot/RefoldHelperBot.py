@@ -34,13 +34,12 @@ from cogs import COGS, COG_REQUIRED_INTENTS, INTENT_DEGRADED_FEATURES
 def build_intents(intent_config):
     """Build the gateway intents from the deployment's privileged-intent flags.
 
-    Only intents this bot actually uses are ever requested. Guild Presences is
-    never requested - no code path reads presence data, and asking for an
-    unused intent both risks rejection at review and, if unapproved, prevents
-    the bot from connecting at all.
+    Only intents this bot actually uses are ever requested. Guild Presences and
+    Message Content are never requested - nothing reads presence, Message
+    Content was denied and is no longer needed, and asking for an intent the
+    app isn't approved for prevents the bot from connecting at all.
     """
     intents = discord.Intents.default()
-    intents.message_content = intent_config.get('message_content', False)
     intents.members = intent_config.get('members', False)
     return intents
 
@@ -123,8 +122,7 @@ class RefoldHelperBot(commands.Bot):
             for feature in features:
                 print(f"  - {feature}")
         if missing:
-            print("\nEnable with INTENT_MESSAGE_CONTENT=true / INTENT_GUILD_MEMBERS=true "
-                  "once Discord approves the request.\n")
+            print("\nEnable with INTENT_GUILD_MEMBERS=true once Discord approves the request.\n")
 
     def _skip_reason(self, cog):
         """Return the missing intent blocking this cog, or None if safe to load."""
@@ -454,7 +452,6 @@ async def main():
         print("")
         print("An intent is enabled here that the app is not approved for.")
         print("Set the matching env var to false to get the bot back online:")
-        print("  INTENT_MESSAGE_CONTENT=false")
         print("  INTENT_GUILD_MEMBERS=false")
         print("")
         print("Then check the approval state under Bot > Privileged Gateway")

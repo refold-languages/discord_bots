@@ -18,6 +18,8 @@ from config.constants import (
     HONEYPOT_CHANNEL_NAME,
     HONEYPOT_BAN_DELETE_MESSAGE_SECONDS,
     HONEYPOT_RECORD_FILE,
+    MODERATION_RECORD_RETENTION_DAYS,
+    MODERATION_RECORD_MAX,
 )
 from config.settings import settings
 from utils import get_logger
@@ -98,23 +100,14 @@ class HoneypotService(BaseService):
         Append a ban record to the durable JSON file.
 
         Uses an atomic write (temp file + replace) so a crash mid-write
-        can't corrupt the existing history.
+        can't corrupt the existing history. Applies the retention policy.
         """
         try:
             records = self.get_ban_records()
             records.append(record)
-
-            os.makedirs(settings.DATA_DIR, exist_ok=True)
-            fd, tmp_path = tempfile.mkstemp(dir=settings.DATA_DIR,
-                                            prefix='.honeypot_', suffix='.tmp')
-            try:
-                with os.fdopen(fd, 'w', encoding='utf-8') as f:
-                    json.dump(records, f, indent=2, default=str)
-                os.replace(tmp_path, self._record_path)
-            except Exception:
-                if os.path.exists(tmp_path):
-                    os.remove(tmp_path)
-                raise
+            records = self.prune_records(records, max_age_days=MODERATION_RECORD_RETENTION_DAYS,
+                                         max_records=MODERATION_RECORD_MAX)
+            self._write_records(records)
 
             self.logger.info("honeypot_ban_recorded",
                              user_id=record.get('user_id'),
@@ -125,3 +118,33 @@ class HoneypotService(BaseService):
             self.logger.error("honeypot_record_write_failed",
                               error=str(e), error_type=type(e).__name__)
             return False
+
+    def prune_ban_records(self) -> int:
+        """Apply the retention policy to the stored records; returns how many were dropped."""
+        records = self.get_ban_records()
+        kept = self.prune_records(records, max_age_days=MODERATION_RECORD_RETENTION_DAYS,
+                                  max_records=MODERATION_RECORD_MAX)
+        dropped = len(records) - len(kept)
+        if dropped:
+            try:
+                self._write_records(kept)
+            except OSError as e:
+                self.logger.error("honeypot_record_prune_failed",
+                                  error=str(e), error_type=type(e).__name__)
+                return 0
+            self.logger.info("honeypot_records_pruned", dropped=dropped, kept=len(kept))
+        return dropped
+
+    def _write_records(self, records: List[Dict[str, Any]]) -> None:
+        """Atomically replace the record file (temp file + replace)."""
+        os.makedirs(settings.DATA_DIR, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(dir=settings.DATA_DIR,
+                                        prefix='.honeypot_', suffix='.tmp')
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                json.dump(records, f, indent=2, default=str)
+            os.replace(tmp_path, self._record_path)
+        except Exception:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+            raise

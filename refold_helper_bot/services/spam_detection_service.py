@@ -34,6 +34,8 @@ from config.constants import (
     ANTISPAM_LONE_IMAGE_WINDOW,
     ANTISPAM_CROSS_CHANNEL_MAX,
     ANTISPAM_CROSS_CHANNEL_WINDOW,
+    ANTISPAM_CHANNEL_HOP_MAX,
+    ANTISPAM_CHANNEL_HOP_WINDOW,
     ANTISPAM_REPEAT_MAX,
     ANTISPAM_REPEAT_WINDOW,
     ANTISPAM_NEW_USER_MINUTES,
@@ -45,6 +47,8 @@ from config.constants import (
     ANTISPAM_TIMEOUT_SECONDS,
     ANTISPAM_RECORD_FILE,
     ANTISPAM_CONFIG_FILE,
+    MODERATION_RECORD_RETENTION_DAYS,
+    MODERATION_RECORD_MAX,
 )
 from config.settings import settings
 from utils import get_logger
@@ -105,6 +109,7 @@ class SpamDetectionService(BaseService):
             ANTISPAM_CROSS_CHANNEL_WINDOW,
             ANTISPAM_REPEAT_WINDOW,
             ANTISPAM_LONE_IMAGE_WINDOW,
+            ANTISPAM_CHANNEL_HOP_WINDOW,
         )
 
         self._patterns = [
@@ -169,7 +174,8 @@ class SpamDetectionService(BaseService):
                  content: str, account_age_days: Optional[float],
                  joined_minutes_ago: Optional[float],
                  has_roles: bool = False,
-                 mentions_everyone: bool = False) -> Dict[str, Any]:
+                 mentions_everyone: bool = False,
+                 content_available: bool = True) -> Dict[str, Any]:
         """
         Record a message and decide what action (if any) the user has earned.
 
@@ -182,6 +188,13 @@ class SpamDetectionService(BaseService):
         ``has_roles`` (member carries a self-assigned role) and
         ``mentions_everyone`` (the message actually mentioned @everyone/@here,
         not merely typed the text) are cheap trust/scam signals from the cog.
+
+        ``content_available`` is False when the bot lacks the Message Content
+        intent. Discord then delivers every message with empty text and no
+        attachments or embeds, so all content and image detectors are switched
+        off outright - an empty message must never look like a captionless
+        image dump. Only content-free signals remain: a genuine @everyone ping
+        from a brand-new member, and rapid channel hopping (soft action only).
 
         Guiding principle: only ban on things an innocent member essentially
         never does (scam links, a genuine @everyone ping from a brand-new
@@ -231,7 +244,8 @@ class SpamDetectionService(BaseService):
             if timestamp - e.ts <= ANTISPAM_IMAGE_WINDOW
         )
         detectors['image_count'] = images_in_window
-        image_flood = (not has_text) and images_in_window > ANTISPAM_IMAGE_MAX
+        image_flood = (content_available and not has_text
+                       and images_in_window > ANTISPAM_IMAGE_MAX)
         if image_flood:
             reasons.append(
                 f"Posted {images_in_window} images with no caption in "
@@ -243,7 +257,7 @@ class SpamDetectionService(BaseService):
         # other recent activity: the drive-by image scammer. Only worth the
         # (cheap) history scan when this message could actually qualify.
         lone_image_dump = False
-        if image_count >= ANTISPAM_LONE_IMAGE_MIN and not normalized:
+        if content_available and image_count >= ANTISPAM_LONE_IMAGE_MIN and not normalized:
             other_recent = sum(
                 1 for e in events
                 if e.message_id != message_id
@@ -288,6 +302,22 @@ class SpamDetectionService(BaseService):
                 reasons.append(
                     f"Repeated the same message {len(same_repeat)} times in "
                     f"{ANTISPAM_REPEAT_WINDOW}s (limit {ANTISPAM_REPEAT_MAX})."
+                )
+
+        # --- Detector: channel hopping (content unavailable) ----------
+        # The content-free stand-in for cross-channel repeat: without text we
+        # can't tell the messages are identical, only that they landed in many
+        # channels in a few seconds.
+        channel_hop = False
+        if not content_available:
+            hop_channels = len({e.channel_id for e in events
+                                if timestamp - e.ts <= ANTISPAM_CHANNEL_HOP_WINDOW})
+            detectors['hop_channels'] = hop_channels
+            channel_hop = hop_channels > ANTISPAM_CHANNEL_HOP_MAX
+            if channel_hop:
+                reasons.append(
+                    f"Posted in {hop_channels} different channels in "
+                    f"{ANTISPAM_CHANNEL_HOP_WINDOW}s (limit {ANTISPAM_CHANNEL_HOP_MAX})."
                 )
 
         # --- Detector: word filter for new users ----------------------
@@ -345,6 +375,10 @@ class SpamDetectionService(BaseService):
             # Identical text hosed across channels/rapidly by a fresh, unknown
             # account: the classic hacked-account spam bot. Ban.
             action, confidence = ACTION_BAN, 'high'
+        elif channel_hop and not text_trusted:
+            # Many channels in seconds from someone with no role and little
+            # tenure. Without content this is never certain enough to ban.
+            action, confidence = ACTION_TIMEOUT, 'low'
         elif image_spam and not has_presence:
             # Image dump from someone with no real presence. Not certain enough
             # to ban — could be a new member sharing screenshots. Soft action.
@@ -373,6 +407,9 @@ class SpamDetectionService(BaseService):
                             and timestamp - e.ts <= ANTISPAM_IMAGE_WINDOW]
             if not message_refs:
                 message_refs = [(channel_id, message_id)]
+        elif channel_hop and action != ACTION_NONE:
+            message_refs = [(e.channel_id, e.message_id) for e in events
+                            if timestamp - e.ts <= ANTISPAM_CHANNEL_HOP_WINDOW]
         else:
             message_refs = [(channel_id, message_id)]
 
@@ -388,6 +425,29 @@ class SpamDetectionService(BaseService):
             'detectors': detectors,
             'message_refs': message_refs,
             'image_related': image_related,
+        }
+
+    def evaluate_automod_hit(self, *, matched_keyword: Optional[str],
+                             joined_minutes_ago: Optional[float]) -> Dict[str, Any]:
+        """Decide whether a scam-filter AutoMod hit should become a ban.
+
+        AutoMod runs the word filter now (the bot can't read message text),
+        but the policy is unchanged: a match is only near-certain enough to
+        ban when it comes from a member who joined minutes ago. Anyone else
+        gets no action from the bot; staff still see Discord's AutoMod alert.
+        """
+        is_new_user = (joined_minutes_ago is not None
+                       and joined_minutes_ago <= ANTISPAM_NEW_USER_MINUTES)
+        pattern = (matched_keyword or 'scam-link pattern').removeprefix('(?i)')
+        if not is_new_user:
+            return {'action': ACTION_NONE, 'confidence': None, 'reasons': [],
+                    'detectors': {'automod': 1}}
+        return {
+            'action': ACTION_BAN,
+            'confidence': 'high',
+            'reasons': [f"New member (joined {joined_minutes_ago:.1f}m ago) matched "
+                        f"the scam-link filter (AutoMod): /{pattern}/."],
+            'detectors': {'automod': 1},
         }
 
     # ------------------------------------------------------------------
@@ -455,10 +515,12 @@ class SpamDetectionService(BaseService):
         return self._read_json_list(self._record_path)
 
     def record_action(self, record: Dict[str, Any]) -> bool:
-        """Append an action record using an atomic write."""
+        """Append an action record using an atomic write, applying retention."""
         try:
             records = self.get_action_records()
             records.append(record)
+            records = self.prune_records(records, max_age_days=MODERATION_RECORD_RETENTION_DAYS,
+                                         max_records=MODERATION_RECORD_MAX)
             self._atomic_write_json(self._record_path, records, prefix='.antispam_')
             self.logger.info("antispam_action_recorded",
                              action=record.get('action'),
@@ -470,6 +532,22 @@ class SpamDetectionService(BaseService):
             self.logger.error("antispam_record_write_failed",
                               error=str(e), error_type=type(e).__name__)
             return False
+
+    def prune_action_records(self) -> int:
+        """Apply the retention policy to the stored records; returns how many were dropped."""
+        records = self.get_action_records()
+        kept = self.prune_records(records, max_age_days=MODERATION_RECORD_RETENTION_DAYS,
+                                  max_records=MODERATION_RECORD_MAX)
+        dropped = len(records) - len(kept)
+        if dropped:
+            try:
+                self._atomic_write_json(self._record_path, kept, prefix='.antispam_')
+            except OSError as e:
+                self.logger.error("antispam_record_prune_failed",
+                                  error=str(e), error_type=type(e).__name__)
+                return 0
+            self.logger.info("antispam_records_pruned", dropped=dropped, kept=len(kept))
+        return dropped
 
     # ------------------------------------------------------------------
     # Per-guild config persistence

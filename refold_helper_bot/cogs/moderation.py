@@ -1,6 +1,6 @@
 """
 Moderation cog for Refold Helper Bot.
-Handles rules, FAQs, message monitoring, and community guidelines.
+Handles rules, FAQs, and community guidelines.
 """
 
 from typing import Optional
@@ -8,8 +8,6 @@ from typing import Optional
 import discord
 from discord import app_commands
 from discord.ext import commands
-
-from config.constants import IGNORED_SERVER_IDS, DELETED_MESSAGE_LOG_CHANNEL_ID
 
 
 RULES = [
@@ -112,32 +110,6 @@ class Moderation(commands.Cog):
             'También te recomendamos hacer clic en la bandera de España para unirte al servidor de Refold Español '
             '(donde podrás no solo interactuar y ayudar a angloparlantes con su español, pero también recibir ayuda con tu inglés). '
             'Si necesitas más ayuda, menciona a @Spanish Helper.')
-
-    # Event handlers
-    @commands.Cog.listener()
-    async def on_message_delete(self, message):
-        """Log deleted messages to moderation channel."""
-        if message.guild is None or message.guild.id in IGNORED_SERVER_IDS:
-            return
-        # Without the Message Content intent every message arrives with empty
-        # content, and Discord rejects an embed field with an empty value -
-        # there is nothing worth logging, so skip rather than 400 on each one.
-        if not message.content:
-            return
-
-        embed = discord.Embed(
-            title=f'A message was deleted in {message.guild.name}',
-            description='',
-            color=0x4287f5
-        )
-        # Embed field values are capped at 1024 characters.
-        content = message.content if len(message.content) <= 1024 else message.content[:1021] + '...'
-        embed.add_field(name='The deleted message is:', value=content, inline=True)
-        embed.add_field(name='It was sent by:', value=f'{message.author.mention}', inline=True)
-        
-        channel = self.bot.get_channel(DELETED_MESSAGE_LOG_CHANNEL_ID)
-        if channel:
-            await channel.send('', embed=embed)
 
 
 async def setup(bot):

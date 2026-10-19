@@ -4,7 +4,8 @@ Provides common patterns and utilities for all service classes.
 """
 
 from abc import ABC
-from typing import Any, Dict, Optional
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional
 
 
 class BaseService(ABC):
@@ -73,3 +74,28 @@ class BaseService(ABC):
             text = text[:max_length].rstrip()
         
         return text
+
+    @staticmethod
+    def prune_records(records: List[Dict[str, Any]], *, max_age_days: int,
+                      max_records: int, now: Optional[datetime] = None) -> List[Dict[str, Any]]:
+        """Drop records older than ``max_age_days`` and keep at most the newest ``max_records``.
+
+        Records are expected oldest-first with an ISO-8601 ``timestamp``. A
+        record whose timestamp can't be parsed is kept rather than silently
+        destroyed; the count cap still bounds the file.
+        """
+        now = now or datetime.now(timezone.utc)
+        cutoff = now - timedelta(days=max_age_days)
+
+        kept = []
+        for record in records:
+            try:
+                ts = datetime.fromisoformat(str(record.get('timestamp', '')).replace('Z', '+00:00'))
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+            except ValueError:
+                kept.append(record)
+                continue
+            if ts >= cutoff:
+                kept.append(record)
+        return kept[-max_records:] if max_records > 0 else []

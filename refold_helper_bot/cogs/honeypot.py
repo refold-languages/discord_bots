@@ -11,7 +11,7 @@ can post the warning message itself.
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 from services import HoneypotService, enforcement_state
 from config.constants import HONEYPOT_LOG_CHANNEL_ID, ANTISPAM_TEST_REACTION_BAN
@@ -30,7 +30,16 @@ class Honeypot(commands.Cog):
         """Initialize the honeypot service when the cog loads."""
         self.honeypot_service.initialize()
         enforcement_state.initialize()
+        self.prune_records.start()
         self.logger.info("honeypot_cog_loaded")
+
+    async def cog_unload(self):
+        self.prune_records.cancel()
+
+    @tasks.loop(hours=24)
+    async def prune_records(self):
+        """Apply the moderation-record retention policy once a day."""
+        self.honeypot_service.prune_ban_records()
 
     def _has_staff_powers(self, member: discord.Member) -> bool:
         """True if the member has any moderator/admin-level permission."""
@@ -169,7 +178,9 @@ class Honeypot(commands.Cog):
                         value=f"Last {record['messages_purged_seconds'] // 3600}h",
                         inline=True)
         embed.add_field(name='Their message',
-                        value=record['message_content'] or '*(no text content)*',
+                        value=record['message_content'] or (
+                            '*(no text content)*' if self.bot.intents.message_content
+                            else '*(message text unavailable to the bot)*'),
                         inline=False)
         embed.set_footer(text=f"{record['timestamp']} • reason: {record['reason']}")
 
