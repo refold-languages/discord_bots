@@ -4,6 +4,9 @@ Contains games, jokes, and interactive entertainment commands.
 """
 
 import random
+
+import discord
+from discord import app_commands
 from discord.ext import commands
 
 
@@ -13,9 +16,10 @@ class Fun(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @commands.command(help='Roll any number of dice with any number of sides')
-    async def roll(self, ctx, dice='1d20', mod='+0'):
-        """Roll dice with optional modifier (e.g., !roll 2d6 +3)."""
+    @app_commands.command(description='Roll any number of dice with any number of sides')
+    @app_commands.describe(dice='Dice to roll, e.g. 1d20 or 2d6', mod='Modifier, e.g. +3 or -1')
+    async def roll(self, interaction: discord.Interaction, dice: str = '1d20', mod: str = '+0'):
+        """Roll dice with optional modifier (e.g., /roll 2d6 +3)."""
         try:
             result = 0
             rolls = 0
@@ -34,29 +38,30 @@ class Fun(commands.Cog):
                 result = result - int(modnum)
             
             if mod == '+0':
-                await ctx.send(f'{ctx.author.mention}, you got a {str(result)}! You rolled {dice}.')
+                await interaction.response.send_message(f'{interaction.user.mention}, you got a {str(result)}! You rolled {dice}.')
             else:
-                await ctx.send(f'{ctx.author.mention}, you got a {str(result)}! You rolled {dice} and modified it with {mod}.')
+                await interaction.response.send_message(f'{interaction.user.mention}, you got a {str(result)}! You rolled {dice} and modified it with {mod}.')
                 
         except (ValueError, IndexError):
-            await ctx.send('Invalid dice format! Use format like: 1d20, 2d6+3, 3d8-1')
+            await interaction.response.send_message('Invalid dice format! Use format like: 1d20, 2d6 with mod +3, 3d8 with mod -1',
+                                                    ephemeral=True)
 
-    @commands.command(help='Just flips a coin. Pretty easy.', aliases=['coinflip', 'flip'])
-    async def flipacoin(self, ctx):
+    @app_commands.command(name='flipacoin', description='Just flips a coin. Pretty easy.')
+    async def flipacoin(self, interaction: discord.Interaction):
         """Flip a coin and get heads or tails."""
         options = ['Heads', 'Tails']
         coin = random.choice(options)
-        await ctx.send(f'{ctx.author.mention}, the coin landed on **{coin}**!')
+        await interaction.response.send_message(f'{interaction.user.mention}, the coin landed on **{coin}**!')
 
-    @commands.command(help='Cheese', aliases=['cheese', 'mycheze', 'mycheezy'])
-    async def mycheesy(self, ctx):
+    @app_commands.command(description='Cheese')
+    async def mycheesy(self, interaction: discord.Interaction):
         """Community inside joke - cheese emoji."""
-        await ctx.send(':cheese:')
+        await interaction.response.send_message(':cheese:')
 
-    @commands.command(help='Bacon', aliases=['gorg', 'george', 'georgepag'])
-    async def gorgpag(self, ctx):
+    @app_commands.command(description='Bacon')
+    async def gorgpag(self, interaction: discord.Interaction):
         """Community inside joke - bacon emoji."""
-        await ctx.send(':bacon:')
+        await interaction.response.send_message(':bacon:')
 
 
 async def setup(bot):

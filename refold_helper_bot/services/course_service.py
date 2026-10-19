@@ -229,6 +229,10 @@ class CourseService(BaseService):
         channels = []
         
         for channel in guild.channels:
+            # From 2026-11-16 Discord sends channels the bot can't view as
+            # "___hidden___" placeholders; they aren't real course channels to us.
+            if not channel.permissions_for(guild.me).view_channel:
+                continue
             if hasattr(channel, 'category_id') and channel.category_id == category_id:
                 channels.append({
                     'id': channel.id,
@@ -265,7 +269,7 @@ class CourseService(BaseService):
                         # Check if course exists
                         course_name = row['course_name'].strip()
                         if not self.get_course(course_name):
-                            return False, f"Row {row_num}: Course '{course_name}' not configured. Use `!course add` to create it first."
+                            return False, f"Row {row_num}: Course '{course_name}' not configured. Use `/course add` to create it first."
                         
                         student = StudentRecord(
                             email=row['email'].strip(),
@@ -317,7 +321,7 @@ class CourseService(BaseService):
                     # Check if course exists
                     course_name = row['course_name'].strip()
                     if not self.get_course(course_name):
-                        return False, f"Row {row_num}: Course '{course_name}' not configured. Use `!course add` to create it first."
+                        return False, f"Row {row_num}: Course '{course_name}' not configured. Use `/course add` to create it first."
                     
                     student = StudentRecord(
                         email=row['email'].strip(),
@@ -392,6 +396,25 @@ class CourseService(BaseService):
             "configured_courses": len(self._courses)
         }
     
+    @staticmethod
+    def handle_matches(discord_handle: str, *, username: str, display: str) -> bool:
+        """True if a roster handle refers to a Discord account.
+
+        Rosters hold whatever students typed: a username, a legacy
+        ``name#1234`` tag, sometimes with a leading ``@``.
+        """
+        handle = discord_handle.lower().strip().lstrip('@')
+        return handle in {username.lower(), display.lower()} or \
+            handle.split('#')[0] == username.lower()
+
+    def find_pending_student(self, *, username: str, display: str) -> Optional[StudentRecord]:
+        """Pending roster entry for a Discord account, matched by handle."""
+        for student in self._students:
+            if student.status == "pending" and self.handle_matches(
+                    student.discord_handle, username=username, display=display):
+                return student
+        return None
+
     def get_pending_students(self) -> List[StudentRecord]:
         """Get students who haven't been assigned roles yet."""
         return [s for s in self._students if s.status == "pending"]

@@ -299,12 +299,15 @@ class ThreadService(BaseService):
                             error=str(e))
             return False
     
-    def generate_thread_name_from_message(self, message_content: str) -> str:
+    def generate_thread_name_from_message(self, message_content: str,
+                                          fallback: str = "New Thread") -> str:
         """
         Generate a thread name from message content.
         
         Args:
-            message_content: Content of the message
+            message_content: Content of the message (empty without the
+                Message Content intent)
+            fallback: Name to use when there is no content to build one from
             
         Returns:
             Generated thread name
@@ -312,7 +315,7 @@ class ThreadService(BaseService):
         try:
             if not message_content:
                 self.logger.debug("empty_message_content_for_thread_name")
-                return "New Thread"
+                return self.sanitize_string(fallback, max_length=90) or "New Thread"
             
             # Take first 5 words and add ellipsis
             words = str(message_content).split()[:5]

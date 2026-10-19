@@ -9,7 +9,10 @@ import asyncio
 import traceback
 from datetime import datetime
 
+from typing import List
+
 import discord
+from discord import app_commands
 from discord.ext import commands
 
 import doclist
@@ -17,6 +20,34 @@ from config.constants import VIDEO_LINKS_FILE, CROWDSOURCE_DOCS_FILE
 from services import YouTubeService, ProcessingProgress
 from core import DataManager
 from utils import get_logger, monitor_command, ValidationError, DiscordError, DataError
+
+SUPPORTED_KEY_SERVICES = ['deepseek']
+
+
+class ApiKeyModal(discord.ui.Modal):
+    """Collects an API key privately, so it never appears in a channel."""
+
+    api_key = discord.ui.TextInput(label='API key', placeholder='sk-...', max_length=200)
+
+    def __init__(self, cog: 'Resources', service: str):
+        super().__init__(title=f'Store {service} API key')
+        self.cog = cog
+        self.service = service
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            success = self.cog.data_manager.store_api_key(self.service, self.api_key.value.strip())
+        except Exception as e:
+            self.cog.logger.error("api_key_store_error", service=self.service, error=str(e))
+            success = False
+
+        if success:
+            self.cog.logger.info("api_key_stored", service=self.service, user_id=interaction.user.id)
+            await interaction.response.send_message(
+                f"✅ API key for **{self.service}** has been stored securely.", ephemeral=True)
+        else:
+            await interaction.response.send_message(
+                "❌ Failed to store API key. Please try again.", ephemeral=True)
 
 
 class Resources(commands.Cog):
@@ -77,93 +108,85 @@ class Resources(commands.Cog):
                 return doc['link']
         return "No document found for your query."
 
-    # Resource lookup commands
-    @commands.command(name='video')
-    async def video(self, ctx, *, query: str):
-        """Search for instructional videos by keyword."""
-        video_link = self._find_video(query)
-        await ctx.send(video_link)
+    @staticmethod
+    def _autocomplete_references(entries, current: str) -> List[app_commands.Choice[str]]:
+        """Suggest lookup keywords from a resource table's reference lists."""
+        current = current.lower()
+        seen = []
+        for entry in entries:
+            for ref in entry['references']:
+                if ref and current in ref and ref not in seen:
+                    seen.append(ref)
+        return [app_commands.Choice(name=ref[:100], value=ref[:100]) for ref in seen[:25]]
 
-    @commands.command(name='doc', aliases=['crowdsourcedoc', 'resourcedoc'])
-    async def doc(self, ctx, *, query: str):
+    # Resource lookup commands
+    @app_commands.command(name='video', description='Search for instructional videos by keyword')
+    @app_commands.describe(query='Topic keyword')
+    async def video(self, interaction: discord.Interaction, query: str):
+        """Search for instructional videos by keyword."""
+        await interaction.response.send_message(self._find_video(query))
+
+    @video.autocomplete('query')
+    async def _video_autocomplete(self, interaction: discord.Interaction, current: str):
+        return self._autocomplete_references(self.video_data, current)
+
+    @app_commands.command(name='doc', description='Find the crowdsourced resource doc for a language or topic')
+    @app_commands.describe(query='Language or topic')
+    async def doc(self, interaction: discord.Interaction, query: str):
         """Search for documentation by language or topic."""
-        doc_link = self._find_doc(query)
-        await ctx.send(doc_link)
+        await interaction.response.send_message(self._find_doc(query))
+
+    @doc.autocomplete('query')
+    async def _doc_autocomplete(self, interaction: discord.Interaction, current: str):
+        return self._autocomplete_references(self.doc_data, current)
 
     # Direct resource links
-    @commands.command(hidden=True, aliases=['japanesedoc', 'japandoc'])
-    async def jpdoc(self, ctx):
+    @app_commands.command(description='Link to the Japanese resources document')
+    async def jpdoc(self, interaction: discord.Interaction):
         """Get link to Japanese resources document."""
-        await ctx.send(f'{doclist.docjp}')
+        await interaction.response.send_message(f'{doclist.docjp}')
 
     # Educational content commands
-    @commands.command(aliases=['2L2', 'twol2', 'twoltwo', 'twoLtwo', '2l2'])
-    async def twoL2(self, ctx):
+    @app_commands.command(name='twol2', description='Learning two languages at the same time')
+    async def twoL2(self, interaction: discord.Interaction):
         """Information about learning two languages simultaneously."""
-        await ctx.send('Learning two languages at the same time is totally possible, but it\'s less efficient than doing one language and then the other. This is because you will lose some time switching between the languages, you\'re more likely to get confused, etc. For more information, watch this video: https://www.youtube.com/watch?v=PlteftANWoE')
+        await interaction.response.send_message('Learning two languages at the same time is totally possible, but it\'s less efficient than doing one language and then the other. This is because you will lose some time switching between the languages, you\'re more likely to get confused, etc. For more information, watch this video: https://www.youtube.com/watch?v=PlteftANWoE')
 
-    @commands.command(aliases=['STAGE1', 'Stage1', 'StageOne', 'Stage_1'])
-    async def stage1(self, ctx):
+    @app_commands.command(description='What Refold Stage 1 is about')
+    async def stage1(self, interaction: discord.Interaction):
         """Explanation of Refold Stage 1."""
-        await ctx.send('Develop an immersion habit. Study some grammar, find a way to study vocabulary (memrise, quantized, anki etc. ), find content that is compelling and comprehensible ( things you have watched before, subjects that inherently interest you ). When you start sentence mining, you are stage 2a.')
+        await interaction.response.send_message('Develop an immersion habit. Study some grammar, find a way to study vocabulary (memrise, quantized, anki etc. ), find content that is compelling and comprehensible ( things you have watched before, subjects that inherently interest you ). When you start sentence mining, you are stage 2a.')
 
-    @commands.command(aliases=['SentenceMine', 'sentence_mine', 'sentencemining', 'sentence_mining'])
-    async def sentencemine(self, ctx):
+    @app_commands.command(description='What sentence mining is')
+    async def sentencemine(self, interaction: discord.Interaction):
         """Explanation of sentence mining technique."""
-        await ctx.send('When you encounter a sentence where either one word is unknown, or you just don\'t understand the grammar. We call that 1T. This sentence may be recorded by making it a card on anki or a physical one. The point is that you are learning words most relevant to your immersion past the first 1k words.')
+        await interaction.response.send_message('When you encounter a sentence where either one word is unknown, or you just don\'t understand the grammar. We call that 1T. This sentence may be recorded by making it a card on anki or a physical one. The point is that you are learning words most relevant to your immersion past the first 1k words.')
 
-    @commands.command(aliases=['shadow', 'languageparent', 'langparent'])
-    async def shadowing(self, ctx):
+    @app_commands.command(description='What shadowing is')
+    async def shadowing(self, interaction: discord.Interaction):
         """Explanation of shadowing technique."""
-        await ctx.send('The point of this exercise is to practice imitating full native speed to get used to the sounds, rhythm and mannerisms of your language parent (the one you want to most speak like). You can find the article here, <https://refold.la/roadmap/stage-3/b/pronunciation-training>')
+        await interaction.response.send_message('The point of this exercise is to practice imitating full native speed to get used to the sounds, rhythm and mannerisms of your language parent (the one you want to most speak like). You can find the article here, <https://refold.la/roadmap/stage-3/b/pronunciation-training>')
 
     # API Key Management Commands
-    @commands.command(name='loadkey')
-    @commands.has_permissions(administrator=True)
-    @monitor_command()
-    async def load_key(self, ctx, service: str, *, api_key: str):
-        """
-        Load an API key for a service.
-        
-        Usage: !loadkey deepseek sk-1234567890abcdef
-        
-        Supported services: deepseek
-        """
-        # Validate service
-        supported_services = ['deepseek']
-        if service.lower() not in supported_services:
-            await ctx.send(f"❌ Unsupported service. Supported services: {', '.join(supported_services)}")
-            return
-        
-        # Try to delete the command message for security
-        try:
-            await ctx.message.delete()
-        except discord.HTTPException:
-            pass
-        
-        try:
-            # Store the API key
-            success = self.data_manager.store_api_key(service, api_key)
-            
-            if success:
-                await ctx.send(f"✅ API key for **{service}** has been stored securely.", delete_after=10)
-                self.logger.info("api_key_stored", service=service, user_id=ctx.author.id)
-            else:
-                await ctx.send("❌ Failed to store API key. Please try again.", delete_after=10)
-                
-        except Exception as e:
-            self.logger.error("api_key_store_error", service=service, error=str(e))
-            await ctx.send("❌ An error occurred while storing the API key.", delete_after=10)
+    @app_commands.command(name='loadkey', description='Store an API key for a service (opens a private form)')
+    @app_commands.describe(service='Which service the key is for')
+    @app_commands.choices(service=[app_commands.Choice(name=s, value=s) for s in SUPPORTED_KEY_SERVICES])
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    async def load_key(self, interaction: discord.Interaction, service: app_commands.Choice[str]):
+        """Load an API key for a service via a modal, so the key is never posted."""
+        await interaction.response.send_modal(ApiKeyModal(self, service.value))
 
-    @commands.command(name='listkeys')
-    @commands.has_permissions(administrator=True)
-    async def list_keys(self, ctx):
+    @app_commands.command(name='listkeys', description='List stored API keys (service names only)')
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    async def list_keys(self, interaction: discord.Interaction):
         """List all stored API keys (service names only)."""
         try:
             services = self.data_manager.list_api_keys()
             
             if not services:
-                await ctx.send("📋 No API keys stored.")
+                await interaction.response.send_message("📋 No API keys stored.", ephemeral=True)
                 return
             
             embed = discord.Embed(title="Stored API Keys", color=0x00ff00)
@@ -172,22 +195,24 @@ class Resources(commands.Cog):
                 value="\n".join(f"• {service}" for service in services),
                 inline=False
             )
-            embed.set_footer(text="Use !loadkey <service> <key> to add more")
+            embed.set_footer(text="Use /loadkey to add more")
             
-            await ctx.send(embed=embed)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
             
         except Exception as e:
             self.logger.error("list_keys_error", error=str(e))
-            await ctx.send("❌ An error occurred while listing API keys.")
+            await interaction.response.send_message("❌ An error occurred while listing API keys.", ephemeral=True)
 
     # YouTube to Blog Post Command
-    @commands.command(name='youtubetoblog')
+    @app_commands.command(name='youtubetoblog', description='Convert a YouTube video into a blog post')
+    @app_commands.describe(url='YouTube video URL')
+    @app_commands.guild_only()
     @monitor_command()
-    async def youtube_to_blog(self, ctx, *, url: str):
+    async def youtube_to_blog(self, interaction: discord.Interaction, url: str):
         """
         Convert a YouTube video to a blog post.
         
-        Usage: !youtubetoblog https://www.youtube.com/watch?v=VIDEO_ID
+        Usage: /youtubetoblog url:https://www.youtube.com/watch?v=VIDEO_ID
         
         This command downloads video subtitles and converts them to a formatted
         blog post using AI. Rate limited to 1 use per hour per user.
@@ -197,29 +222,31 @@ class Resources(commands.Cog):
             raise ValidationError("Please provide a valid YouTube URL")
         
         # Check rate limiting
-        is_limited, next_allowed = self.youtube_service.is_rate_limited(ctx.author.id)
+        is_limited, next_allowed = self.youtube_service.is_rate_limited(interaction.user.id)
         if is_limited:
             time_remaining = next_allowed - datetime.now()
             minutes = int(time_remaining.total_seconds() / 60)
-            await ctx.send(f"🚫 You're rate limited. Please wait {minutes} minutes before using this command again.")
+            await interaction.response.send_message(
+                f"🚫 You're rate limited. Please wait {minutes} minutes before using this command again.",
+                ephemeral=True)
             return
         
         # Record this request
-        self.youtube_service.record_request(ctx.author.id)
+        self.youtube_service.record_request(interaction.user.id)
         
-        # Create thread for processing
+        # Create a thread on our own reply - there is no command message to hang it on
+        await interaction.response.send_message(f"🎬 Converting <{url}> to a blog post...")
         try:
-            thread = await ctx.message.create_thread(name="YouTube Blog Conversion")
+            message = await interaction.original_response()
+            thread = await message.create_thread(name="YouTube Blog Conversion")
         except discord.HTTPException as e:
             raise DiscordError("Failed to create thread", discord_error=e)
         
-        # Start processing in background
-        task = asyncio.create_task(self._process_youtube_video(thread, url))
+        # Start processing in background; the task handles all updates to the thread
+        asyncio.create_task(self._process_youtube_video(thread, url))
         
-        # Don't await the task - let it run in background
-        # The task will handle all updates to the thread
-        
-        await ctx.send(f"🎬 Started processing video in thread: {thread.mention}")
+        await interaction.edit_original_response(
+            content=f"🎬 Started processing video in thread: {thread.mention}")
 
     async def _process_youtube_video(self, thread, url):
         """Process YouTube video in background with progress updates."""
@@ -392,101 +419,14 @@ class Resources(commands.Cog):
             self.logger.warning("typing_indicator_error", error=str(e))
 
     # Utility commands
-    @commands.command()
-    @commands.has_permissions(manage_channels=True)
-    async def avatar(self, ctx, target: discord.Member = None):
+    @app_commands.command(description="Get a user's avatar URL")
+    @app_commands.describe(target='Whose avatar (default: yours)')
+    @app_commands.default_permissions(manage_channels=True)
+    @app_commands.checks.has_permissions(manage_channels=True)
+    async def avatar(self, interaction: discord.Interaction, target: discord.User = None):
         """Get avatar URL for a user."""
-        if target is None:
-            await ctx.send(f'{ctx.author.avatar}')
-        else:
-            await ctx.send(f'{target.avatar}')
-
-    # Add this new debug command to resources.py
-    @commands.command(name='debugsubtitles')
-    @commands.has_permissions(administrator=True)
-    async def debug_subtitles(self, ctx, *, url: str):
-        """Debug subtitle processing for a specific video."""
-        
-        if not self.youtube_service.validate_youtube_url(url):
-            await ctx.send("❌ Invalid YouTube URL")
-            return
-        
-        await ctx.send(f"🔍 **Debugging subtitle process for:** {url}")
-        
-        # Test 1: List available subtitles
-        try:
-            await ctx.send("📋 **Step 1: Getting available subtitle languages...**")
-            languages = await self.youtube_service.get_available_subtitle_languages(url)
-            await ctx.send(f"✅ **Available languages:** {languages}")
-        except Exception as e:
-            await ctx.send(f"❌ **Step 1 failed:** {str(e)}")
-            return
-        
-        # Test 2: Try downloading subtitles manually for each language
-        if languages:
-            for lang in languages[:3]:  # Test first 3 languages only
-                try:
-                    await ctx.send(f"🔄 **Step 2: Testing download for language '{lang}'...**")
-                    
-                    # Test the actual download command manually
-                    import subprocess
-                    import tempfile
-                    import asyncio
-                    from pathlib import Path
-                    
-                    with tempfile.TemporaryDirectory() as temp_dir:
-                        cmd = [
-                            'yt-dlp',
-                            '--write-auto-subs',
-                            '--sub-lang', lang,
-                            '--sub-format', 'srt',
-                            '--skip-download',
-                            '--output', f'{temp_dir}/%(title)s.%(ext)s',
-                            '--no-warnings',
-                            url
-                        ]
-                        
-                        def run_test():
-                            return subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-                        
-                        loop = asyncio.get_event_loop()
-                        result = await loop.run_in_executor(None, run_test)
-                        
-                        await ctx.send(f"**Command:** `{' '.join(cmd[:4])} {lang} ...`")
-                        await ctx.send(f"**Return code:** {result.returncode}")
-                        
-                        if result.returncode == 0:
-                            subtitle_files = list(Path(temp_dir).glob('*.srt'))
-                            await ctx.send(f"✅ **Success! Files created:** {len(subtitle_files)}")
-                            if subtitle_files:
-                                with open(subtitle_files[0], 'r', encoding='utf-8') as f:
-                                    content = f.read()
-                                    preview = content[:200] + "..." if len(content) > 200 else content
-                                    await ctx.send(f"**Content preview:** ```{preview}```")
-                            break
-                        else:
-                            await ctx.send(f"❌ **Failed for {lang}:** ```{result.stderr[:500]}```")
-                
-                except Exception as e:
-                    await ctx.send(f"❌ **Exception testing {lang}:** {str(e)}")
-        
-        # Test 3: Try the actual service method
-        try:
-            await ctx.send("🔄 **Step 3: Testing actual service method...**")
-            subtitle_content, video_title = await self.youtube_service.download_subtitles(url)
-            
-            if subtitle_content:
-                await ctx.send(f"✅ **Service method success!**")
-                await ctx.send(f"**Title:** {video_title}")
-                await ctx.send(f"**Content length:** {len(subtitle_content)} chars")
-                preview = subtitle_content[:200] + "..." if len(subtitle_content) > 200 else subtitle_content
-                await ctx.send(f"**Content preview:** ```{preview}```")
-            else:
-                await ctx.send("❌ **Service method returned None**")
-                
-        except Exception as e:
-            await ctx.send(f"❌ **Service method exception:** {str(e)}")
-            await ctx.send(f"**Exception type:** {type(e).__name__}")
+        user = target or interaction.user
+        await interaction.response.send_message(user.display_avatar.url)
 
 async def setup(bot):
     """Add the Resources cog to the bot."""

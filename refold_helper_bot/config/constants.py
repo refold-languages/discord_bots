@@ -99,11 +99,11 @@ SPANISH_BOOK_CLUB = {
 # MODERATION
 # =============================================================================
 
-# Servers to ignore when logging deleted messages
-IGNORED_SERVER_IDS = [757802790532677683, 778787713012727809, 778331995297808438]
-
-# Channel where deleted messages are logged
-DELETED_MESSAGE_LOG_CHANNEL_ID = 966080907477909514
+# Durable moderation records (honeypot bans, anti-spam actions) keep the
+# triggering user and a short excerpt so staff can audit and reverse mistakes.
+# They are kept for this long, and never more than this many per file.
+MODERATION_RECORD_RETENTION_DAYS = 90
+MODERATION_RECORD_MAX = 5000
 
 # =============================================================================
 # SPAM HONEYPOT
@@ -116,7 +116,7 @@ HONEYPOT_CHANNEL_NAME = 'spam-honeypot'
 # Channel where honeypot bans are logged as embeds so admins can review them.
 # Set this to the ID of a mod-only channel. If left as None, Discord channel
 # logging is skipped (bans are still recorded to the structured log + JSON file).
-# Currently shares the deleted-message mod log channel.
+# Currently the shared mod log channel.
 HONEYPOT_LOG_CHANNEL_ID = 966080907477909514
 
 # How far back to purge a banned spammer's messages, in seconds.
@@ -184,6 +184,15 @@ ANTISPAM_ESTABLISHED_MINUTES = 24 * 60  # 1 day
 ANTISPAM_CROSS_CHANNEL_MAX = 2  # allow up to 2 distinct channels
 ANTISPAM_CROSS_CHANNEL_WINDOW = 10  # seconds
 
+# --- Detector: channel hopping (used when message content is unavailable) --
+# Without the Message Content intent every message arrives with empty text, so
+# the repeat detectors above can't compare content. Posting in more than this
+# many DISTINCT channels within the window is the content-free shape of the
+# same spam burst. Only applies to members with no role and under a day of
+# tenure, and only ever earns the soft action - never a ban.
+ANTISPAM_CHANNEL_HOP_MAX = 3    # allow up to 3 distinct channels
+ANTISPAM_CHANNEL_HOP_WINDOW = 10  # seconds
+
 # --- Detector: rapid repeat (single or multi channel) ---------------------
 # Same normalized content posted this many times within the window -> spam.
 ANTISPAM_REPEAT_MAX = 5         # 5 identical messages
@@ -236,18 +245,53 @@ ANTISPAM_SOFT_DM_MESSAGE = (
     "think this was an error, just reach out to a moderator."
 )
 
+# --- Discord AutoMod -------------------------------------------------------
+# Message text is unavailable to the bot, so the scam-link word filter runs as
+# Discord AutoMod rules instead (installed per server with /automod setup).
+# Rules the bot manages are recognised by this name prefix.
+AUTOMOD_RULE_PREFIX = 'Refold Helper:'
+# Unique role/user mentions in one message before AutoMod blocks it.
+AUTOMOD_MENTION_LIMIT = 8
+# Shown to a member whose message AutoMod blocked (max 150 chars).
+AUTOMOD_BLOCK_MESSAGE = ("This message was blocked as likely spam. "
+                         "If that's a mistake, please contact a moderator.")
+
 # Durable record of every anti-spam action (under settings.DATA_DIR).
 ANTISPAM_RECORD_FILE = 'antispam_actions.json'
 # Per-guild on/off overrides (under settings.DATA_DIR).
 ANTISPAM_CONFIG_FILE = 'antispam_config.json'
 
 # --- Test mode -------------------------------------------------------------
-# In test mode (toggled at runtime via `!moderation testmode on`), no one is
+# In test mode (toggled at runtime via `/moderation testmode on`), no one is
 # banned/timed-out/deleted. Instead the bot reacts to any message that WOULD
 # have been actioned, so staff can safely verify detection. Applies to BOTH
 # the anti-spam detectors and the honeypot.
 ANTISPAM_TEST_REACTION_BAN = '🚨'       # would have been banned
 ANTISPAM_TEST_REACTION_TIMEOUT = '⏳'   # would have been timed out
+
+# =============================================================================
+# BOT PERMISSIONS
+# =============================================================================
+
+# Server permissions the bot's features rely on. Checked per server at startup
+# so a missing grant is reported up front instead of surfacing later as a 403.
+REQUIRED_BOT_PERMISSIONS = [
+    'view_channel',
+    'send_messages',
+    'send_messages_in_threads',
+    'create_public_threads',
+    'embed_links',
+    'attach_files',
+    'add_reactions',
+    'read_message_history',
+    'manage_messages',          # anti-spam / honeypot message removal
+    'manage_roles',             # role sync, reaction roles, course roles
+    'manage_channels',          # community project channels
+    'create_instant_invite',    # community project invites
+    'ban_members',              # honeypot / anti-spam bans
+    'moderate_members',         # anti-spam timeouts
+    'manage_guild',             # /automod setup (Discord AutoMod rules)
+]
 
 # =============================================================================
 # ADMINISTRATION
@@ -275,5 +319,4 @@ PROJECTS_FILE = 'projects.json'
 LANGUAGE_ROLES_FILE = 'language_roles.tsv'
 VIDEO_LINKS_FILE = 'video_links.tsv'
 CROWDSOURCE_DOCS_FILE = 'crowdsource_docs.tsv'
-UNIQUE_USERS_FILE = 'unique_users.tsv'
 REACTION_ROLES_FILE = 'reaction_roles.tsv'

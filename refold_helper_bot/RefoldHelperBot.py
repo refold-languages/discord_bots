@@ -4,12 +4,16 @@ A comprehensive Discord bot for the Refold language learning community.
 """
 
 import asyncio
+import hashlib
+import json
+import os
 import signal
 import sys
 import traceback
 from datetime import datetime
 
 import discord
+from discord import app_commands
 from discord.ext import commands
 
 # Import configuration
@@ -30,15 +34,27 @@ from cogs import COGS, COG_REQUIRED_INTENTS, INTENT_DEGRADED_FEATURES
 def build_intents(intent_config):
     """Build the gateway intents from the deployment's privileged-intent flags.
 
-    Only intents this bot actually uses are ever requested. Guild Presences is
-    never requested - no code path reads presence data, and asking for an
-    unused intent both risks rejection at review and, if unapproved, prevents
-    the bot from connecting at all.
+    Only intents this bot actually uses are ever requested. Guild Presences and
+    Message Content are never requested - nothing reads presence, Message
+    Content was denied and is no longer needed, and asking for an intent the
+    app isn't approved for prevents the bot from connecting at all.
     """
     intents = discord.Intents.default()
-    intents.message_content = intent_config.get('message_content', False)
     intents.members = intent_config.get('members', False)
     return intents
+
+
+class LoggingCommandTree(app_commands.CommandTree):
+    """Command tree that logs each slash-command invocation before it runs."""
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.type is discord.InteractionType.application_command and interaction.command:
+            self.client.logger.info("command_invoked",
+                                    command_name=interaction.command.qualified_name,
+                                    user_id=interaction.user.id,
+                                    guild_id=interaction.guild_id,
+                                    channel_id=interaction.channel_id)
+        return True
 
 
 class RefoldHelperBot(commands.Bot):
@@ -54,10 +70,20 @@ class RefoldHelperBot(commands.Bot):
         self.intent_config = settings.get_intent_config()
         intents = build_intents(self.intent_config)
 
+        # Every command is a slash command. Message Content is not granted, so
+        # a text prefix can never match; mention-only means no handler ever
+        # tries to parse ordinary members' messages.
+        # Commands are server-only: Discord ignores default_permissions in DMs,
+        # so admin commands would otherwise be offered to anyone there.
         super().__init__(
             intents=intents,
-            command_prefix=settings.COMMAND_PREFIX
+            command_prefix=commands.when_mentioned,
+            help_command=None,
+            tree_cls=LoggingCommandTree,
+            allowed_contexts=app_commands.AppCommandContext(guild=True, dm_channel=False,
+                                                            private_channel=False),
         )
+        self.tree.on_error = self.on_app_command_error
 
         self._log_intent_status()
 
@@ -96,8 +122,7 @@ class RefoldHelperBot(commands.Bot):
             for feature in features:
                 print(f"  - {feature}")
         if missing:
-            print("\nEnable with INTENT_MESSAGE_CONTENT=true / INTENT_GUILD_MEMBERS=true "
-                  "once Discord approves the request.\n")
+            print("\nEnable with INTENT_GUILD_MEMBERS=true once Discord approves the request.\n")
 
     def _skip_reason(self, cog):
         """Return the missing intent blocking this cog, or None if safe to load."""
@@ -240,10 +265,54 @@ class RefoldHelperBot(commands.Bot):
                         final_loaded_cogs=final_cogs,
                         final_cog_count=len(final_cogs))
         
+        await self.sync_commands_if_changed()
+
         # Start health monitoring if enabled
         if settings.HEALTH_CHECKS_ENABLED:
             health_check.start_periodic_checks()
             self.logger.info("health_monitoring_started")
+
+    def _command_tree_hash(self) -> str:
+        """Fingerprint of the global slash-command definitions."""
+        payload = [cmd.to_dict(self.tree) for cmd in self.tree.get_commands()]
+        blob = json.dumps(sorted(payload, key=lambda c: c['name']), sort_keys=True, default=str)
+        return hashlib.sha256(blob.encode()).hexdigest()
+
+    async def sync_commands_if_changed(self, *, force: bool = False) -> bool:
+        """Push slash commands to Discord, but only when their definitions changed.
+
+        Syncing on every restart burns a tightly rate-limited endpoint, so the
+        last synced fingerprint is kept in the data dir and compared first.
+        """
+        hash_file = os.path.join(settings.DATA_DIR, 'command_tree.sha256')
+        current = self._command_tree_hash()
+        try:
+            with open(hash_file) as f:
+                previous = f.read().strip()
+        except OSError:
+            previous = None
+
+        if not force and current == previous:
+            self.logger.info("command_sync_skipped", reason="unchanged")
+            return False
+
+        try:
+            synced = await self.tree.sync()
+        except discord.HTTPException as e:
+            self.logger.error("command_sync_failed", error=str(e))
+            print(f"❌ Slash command sync failed: {e}")
+            return False
+
+        try:
+            os.makedirs(settings.DATA_DIR, exist_ok=True)
+            with open(hash_file, 'w') as f:
+                f.write(current)
+        except OSError as e:
+            self.logger.warning("command_sync_hash_write_failed", error=str(e))
+
+        self.logger.info("commands_synced", count=len(synced))
+        print(f"🔄 Synced {len(synced)} slash commands")
+        return True
 
     async def on_ready(self):
         """Called when bot is ready and logged in."""
@@ -273,55 +342,67 @@ class RefoldHelperBot(commands.Bot):
         print(f'Loaded cogs: {len(ready_cogs)} - {ready_cogs}')
         print('------')
 
-    async def on_command(self, ctx):
-        """Called when a command is invoked."""
-        self.logger.info("command_invoked",
-                        command_name=ctx.command.name,
-                        user_id=ctx.author.id,
-                        guild_id=ctx.guild.id if ctx.guild else None,
-                        channel_id=ctx.channel.id)
+        self._check_guild_permissions()
 
-    async def on_command_completion(self, ctx):
-        """Called when a command completes successfully."""
+    def _check_guild_permissions(self):
+        """Report, per server, any permission the bot's features need but lacks."""
+        from config.constants import REQUIRED_BOT_PERMISSIONS
+
+        required = discord.Permissions(**{name: True for name in REQUIRED_BOT_PERMISSIONS})
+        invite = discord.utils.oauth_url(self.user.id, permissions=required,
+                                         scopes=('bot', 'applications.commands'))
+        any_missing = False
+        for guild in self.guilds:
+            have = guild.me.guild_permissions
+            if have.administrator:
+                continue
+            missing = [name for name in REQUIRED_BOT_PERMISSIONS if not getattr(have, name)]
+            if missing:
+                any_missing = True
+                self.logger.warning("bot_permissions_missing", guild_id=guild.id,
+                                    guild_name=guild.name, missing=missing)
+                print(f"⚠️  Missing permissions in {guild.name} ({guild.id}): {', '.join(missing)}")
+        if any_missing:
+            print(f"Re-invite with the full permission set: {invite}")
+        self.logger.info("bot_permission_check_completed", guilds=len(self.guilds),
+                         permissions_value=required.value)
+
+    async def on_app_command_completion(self, interaction, command):
+        """Called when a slash command completes successfully."""
         # Performance tracking is handled by the performance monitor
-        self.logger.debug("command_completed_successfully", 
-                         command_name=ctx.command.name)
+        self.logger.debug("command_completed_successfully",
+                         command_name=command.qualified_name)
 
-    async def on_command_error(self, ctx, error):
-        """Global error handler for commands."""
+    async def on_app_command_error(self, interaction: discord.Interaction, error):
+        """Global error handler for slash commands."""
+        command_name = interaction.command.qualified_name if interaction.command else "unknown"
         try:
             # Handle with our error system
-            handled = await error_handler.handle_command_error(ctx, error)
-            
+            handled = await error_handler.handle_command_error(interaction, error)
+
             if not handled:
                 # Log unhandled errors
                 self.logger.critical("unhandled_command_error",
-                                   command=ctx.command.name if ctx.command else "unknown",
+                                   command=command_name,
                                    error=str(error),
                                    error_type=type(error).__name__)
-                
+
                 # Send critical alert
                 if settings.ALERTS_ENABLED:
                     await alert_system.send_critical_alert(
                         "Unhandled Command Error",
-                        f"Command '{ctx.command.name if ctx.command else 'unknown'}' failed: {str(error)}",
-                        command=ctx.command.name if ctx.command else "unknown",
-                        user_id=ctx.author.id,
-                        guild_id=ctx.guild.id if ctx.guild else None
+                        f"Command '{command_name}' failed: {str(error)}",
+                        command=command_name,
+                        user_id=interaction.user.id,
+                        guild_id=interaction.guild_id
                     )
-        
+
         except Exception as handler_error:
             # Error in error handler - this is bad
             self.logger.critical("error_handler_failed",
                                original_error=str(error),
                                handler_error=str(handler_error))
             print(f"CRITICAL: Error handler failed: {handler_error}")
-        
-        # Clean up failed command messages
-        try:
-            await ctx.message.delete()
-        except discord.HTTPException:
-            pass
 
     async def on_error(self, event, *args, **kwargs):
         """Global error handler for events."""
@@ -396,7 +477,6 @@ async def main():
         print("")
         print("An intent is enabled here that the app is not approved for.")
         print("Set the matching env var to false to get the bot back online:")
-        print("  INTENT_MESSAGE_CONTENT=false")
         print("  INTENT_GUILD_MEMBERS=false")
         print("")
         print("Then check the approval state under Bot > Privileged Gateway")

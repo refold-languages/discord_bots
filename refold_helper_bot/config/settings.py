@@ -40,7 +40,10 @@ class Settings:
         # Guild Presences is deliberately absent: nothing in this codebase
         # reads presence, and requesting an intent you cannot demonstrate a use
         # for is a documented cause of application rejection.
-        self.INTENT_MESSAGE_CONTENT = os.getenv('INTENT_MESSAGE_CONTENT', 'false').lower() == 'true'
+        #
+        # Message Content is absent too: Discord denied it, and nothing needs it
+        # any more - commands are slash commands and the content filter runs as
+        # Discord AutoMod. Requesting it again would only stop the bot starting.
         self.INTENT_GUILD_MEMBERS = os.getenv('INTENT_GUILD_MEMBERS', 'false').lower() == 'true'
         
         # Logging configuration
@@ -117,7 +120,6 @@ class Settings:
         import; the bot turns them into a ``discord.Intents``.
         """
         return {
-            'message_content': self.INTENT_MESSAGE_CONTENT,
             'members': self.INTENT_GUILD_MEMBERS,
         }
 

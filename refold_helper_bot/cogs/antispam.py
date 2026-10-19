@@ -1,6 +1,17 @@
 """
 Anti-spam cog for Refold Helper Bot.
 
+Without the Message Content intent (Discord denied it) messages arrive with no
+text, attachments or embeds. The cog therefore works in two halves:
+
+  * Content: the scam-link word filter runs as Discord AutoMod rules, which
+    scan text server-side. ``/automod setup`` installs them per server, and
+    ``on_automod_action`` applies the ban policy below to their hits.
+  * Behaviour: ``on_message`` still sees who posted where and when, so the
+    engine runs in content-free mode (channel hopping, @everyone pings).
+
+When content *is* available, the full engine below runs as it always did.
+
 Behaviour-based spam detection that complements the honeypot. It watches every
 message across the community servers, feeds plain values to the
 ``SpamDetectionService``, and carries out whatever escalating action the engine
@@ -24,14 +35,17 @@ ordinary members behaving like spam bots.
 """
 
 from datetime import datetime, timedelta, timezone
+from typing import Dict, Optional
 
 import discord
-from discord.ext import commands
+from discord import app_commands
+from discord.ext import commands, tasks
 
 from services import (
     SpamDetectionService, ACTION_BAN, ACTION_TIMEOUT, ACTION_NONE,
     enforcement_state,
 )
+from services.automod_service import AutoModService
 from config.constants import (
     ANTISPAM_LOG_CHANNEL_ID,
     ANTISPAM_TEST_REACTION_BAN,
@@ -48,12 +62,31 @@ class AntiSpam(commands.Cog):
         self.bot = bot
         self.logger = get_logger('cogs.antispam')
         self.spam_service = SpamDetectionService()
+        self.automod_service = AutoModService()
+        # AutoMod rule id -> name, so executions can be matched to our rules.
+        self._automod_rule_names: Dict[int, Optional[str]] = {}
+
+    @property
+    def content_available(self) -> bool:
+        """Whether messages arrive with their text, attachments and embeds."""
+        return self.bot.intents.message_content
 
     async def cog_load(self):
         """Initialize the spam detection service when the cog loads."""
         self.spam_service.initialize()
+        self.automod_service.initialize()
         enforcement_state.initialize()
-        self.logger.info("antispam_cog_loaded")
+        self.prune_records.start()
+        self.logger.info("antispam_cog_loaded",
+                         content_available=self.content_available)
+
+    async def cog_unload(self):
+        self.prune_records.cancel()
+
+    @tasks.loop(hours=24)
+    async def prune_records(self):
+        """Apply the moderation-record retention policy once a day."""
+        self.spam_service.prune_action_records()
 
     # ------------------------------------------------------------------
     # Helpers (turn Discord objects into plain values for the service)
@@ -177,6 +210,7 @@ class AntiSpam(commands.Cog):
             joined_minutes_ago=joined_minutes,
             has_roles=self._has_roles(author),
             mentions_everyone=message.mention_everyone,
+            content_available=self.content_available,
         )
 
         action = decision['action']
@@ -235,6 +269,98 @@ class AntiSpam(commands.Cog):
                             reasons=decision['reasons'])
         await self._post_log_embed(record)
 
+    @commands.Cog.listener()
+    async def on_automod_action(self, execution: discord.AutoModAction):
+        """Escalate scam-filter AutoMod hits from brand-new members to a ban.
+
+        AutoMod reports who triggered which rule where, but not the message
+        text (that needs the Message Content intent); the matched pattern is
+        enough to apply the same new-member policy the word filter had.
+        """
+        # Discord sends one execution per action on the rule; the scam rule
+        # only alerts, so act on that one event.
+        if execution.action.type is not discord.AutoModRuleActionType.send_alert_message:
+            return
+        if execution.rule_trigger_type is not discord.AutoModRuleTriggerType.keyword:
+            return
+
+        guild = execution.guild
+        if guild is None or not self.spam_service.is_enabled_for_guild(guild.id):
+            return
+        if not enforcement_state.is_enabled():
+            return
+        if not self.automod_service.is_escalating_rule(await self._automod_rule_name(execution)):
+            return
+
+        author = execution.member
+        if author is None:
+            try:
+                author = await guild.fetch_member(execution.user_id)
+            except discord.HTTPException:
+                return  # already gone (left or banned)
+        if author.bot:
+            return
+        is_staff = author.id == guild.owner_id or self._has_staff_powers(author)
+        if is_staff and not enforcement_state.is_test_mode():
+            return
+
+        joined_minutes = (self._minutes_since(author.joined_at)
+                          if getattr(author, 'joined_at', None) else None)
+        decision = self.spam_service.evaluate_automod_hit(
+            matched_keyword=execution.matched_keyword,
+            joined_minutes_ago=joined_minutes,
+        )
+        if decision['action'] == ACTION_NONE:
+            return
+
+        channel = guild.get_channel_or_thread(execution.channel_id) if execution.channel_id else None
+        message = (channel.get_partial_message(execution.message_id)
+                   if channel is not None and execution.message_id else None)
+        record = self.spam_service.build_action_record(
+            action=decision['action'],
+            confidence=decision['confidence'],
+            reasons=decision['reasons'],
+            user_id=author.id,
+            user_name=str(author),
+            guild_id=guild.id,
+            guild_name=guild.name,
+            channel_id=execution.channel_id,
+            channel_name=getattr(channel, 'name', str(execution.channel_id)),
+            message_content=execution.content,
+        )
+
+        if enforcement_state.is_test_mode():
+            if message is not None:
+                await self._handle_test_mode(message, record, fallback_channel=channel)
+            else:
+                await self._post_log_embed(record, test_mode=True, fallback_channel=channel)
+            self.logger.info("antispam_automod_test_mode_trigger",
+                             user_id=author.id, guild_id=guild.id,
+                             reasons=decision['reasons'])
+            return
+
+        if not await self._do_ban(guild, author, message, decision):
+            return
+        self.spam_service.record_action(record)
+        self.logger.warning("antispam_action_executed", source="automod",
+                            action=decision['action'], user_id=author.id,
+                            user_name=str(author), guild_id=guild.id,
+                            channel_id=execution.channel_id,
+                            reasons=decision['reasons'])
+        await self._post_log_embed(record)
+
+    async def _automod_rule_name(self, execution: discord.AutoModAction) -> Optional[str]:
+        """Name of the rule behind an execution, cached per rule id."""
+        if execution.rule_id not in self._automod_rule_names:
+            try:
+                rule = await execution.fetch_rule()
+                self._automod_rule_names[execution.rule_id] = rule.name
+            except discord.HTTPException as e:
+                self.logger.warning("automod_rule_fetch_failed", rule_id=execution.rule_id,
+                                    error=str(e), error_type=type(e).__name__)
+                return None
+        return self._automod_rule_names[execution.rule_id]
+
     # ------------------------------------------------------------------
     # Enforcement actions
     # ------------------------------------------------------------------
@@ -259,10 +385,11 @@ class AntiSpam(commands.Cog):
             return False
 
         # The ban purges within the window; delete the trigger explicitly too.
-        try:
-            await message.delete()
-        except discord.HTTPException:
-            pass
+        if message is not None:
+            try:
+                await message.delete()
+            except discord.HTTPException:
+                pass
         return True
 
     async def _do_timeout(self, guild, author, message, decision) -> bool:
@@ -325,7 +452,7 @@ class AntiSpam(commands.Cog):
     # ------------------------------------------------------------------
     # Test mode
     # ------------------------------------------------------------------
-    async def _handle_test_mode(self, message: discord.Message, record: dict):
+    async def _handle_test_mode(self, message, record: dict, fallback_channel=None):
         """React to a message that WOULD be actioned, and log it (no enforcement)."""
         is_ban = record['action'] == ACTION_BAN
         emoji = ANTISPAM_TEST_REACTION_BAN if is_ban else ANTISPAM_TEST_REACTION_TIMEOUT
@@ -337,7 +464,7 @@ class AntiSpam(commands.Cog):
         # Fall back to the triggering channel so test mode is visible even on a
         # server without the configured mod-log channel (e.g. a test server).
         await self._post_log_embed(record, test_mode=True,
-                                   fallback_channel=message.channel)
+                                   fallback_channel=fallback_channel or message.channel)
 
     # ------------------------------------------------------------------
     # Logging
@@ -387,7 +514,9 @@ class AntiSpam(commands.Cog):
                               or '*(no detail)*',
                         inline=False)
         embed.add_field(name='Their message',
-                        value=record['message_content'] or '*(no text content)*',
+                        value=record['message_content'] or (
+                            '*(no text content)*' if self.content_available
+                            else '*(message text unavailable to the bot — see the AutoMod alert)*'),
                         inline=False)
 
         # Show the actual images so mods can eyeball whether this was a scammer
@@ -413,17 +542,17 @@ class AntiSpam(commands.Cog):
     # ------------------------------------------------------------------
     # Staff commands
     # ------------------------------------------------------------------
-    @commands.command(name='spamstats',
-                      help='Show the most recent automatic anti-spam actions.',
-                      category='General Commands')
-    @commands.has_permissions(ban_members=True)
-    async def spam_stats(self, ctx, count: int = 10):
+    @app_commands.command(name='spamstats', description='Show the most recent automatic anti-spam actions')
+    @app_commands.describe(count='How many actions to show (1-25)')
+    @app_commands.default_permissions(ban_members=True)
+    @app_commands.checks.has_permissions(ban_members=True)
+    async def spam_stats(self, interaction: discord.Interaction,
+                         count: app_commands.Range[int, 1, 25] = 10):
         """List recent anti-spam actions so staff can review who/why/when."""
-        count = max(1, min(count, 25))
         records = self.spam_service.get_action_records()
 
         if not records:
-            await ctx.send("No anti-spam actions recorded yet.")
+            await interaction.response.send_message("No anti-spam actions recorded yet.", ephemeral=True)
             return
 
         recent = records[-count:][::-1]
@@ -440,92 +569,183 @@ class AntiSpam(commands.Cog):
                 value=f"{r.get('timestamp', '?')} — #{r.get('channel_name', '?')}\n{why}"[:1024],
                 inline=False,
             )
-        await ctx.send(embed=embed)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @commands.command(name='antispam',
-                      help='Toggle anti-spam for this server: !antispam on|off',
-                      category='General Commands')
-    @commands.has_permissions(manage_guild=True)
-    @commands.guild_only()
-    async def antispam_toggle(self, ctx, state: str = ''):
+    @app_commands.command(name='antispam', description='Show or toggle anti-spam for this server')
+    @app_commands.describe(state='Turn anti-spam on or off (omit to see the current state)')
+    @app_commands.choices(state=[app_commands.Choice(name='on', value='on'),
+                                 app_commands.Choice(name='off', value='off')])
+    @app_commands.default_permissions(manage_guild=True)
+    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.guild_only()
+    async def antispam_toggle(self, interaction: discord.Interaction,
+                              state: Optional[app_commands.Choice[str]] = None):
         """Enable or disable heuristic anti-spam in the current guild."""
-        state = state.strip().lower()
-        if state not in ('on', 'off'):
-            enabled = self.spam_service.is_enabled_for_guild(ctx.guild.id)
-            await ctx.send(
+        if state is None:
+            enabled = self.spam_service.is_enabled_for_guild(interaction.guild_id)
+            await interaction.response.send_message(
                 f"Anti-spam is currently **{'on' if enabled else 'off'}** here. "
-                f"Use `!antispam on` or `!antispam off` to change it."
+                f"Use `/antispam state:on` or `/antispam state:off` to change it.",
+                ephemeral=True
             )
             return
 
-        enabled = state == 'on'
-        if self.spam_service.set_guild_enabled(ctx.guild.id, enabled):
-            self.logger.info("antispam_toggled", guild_id=ctx.guild.id,
-                             enabled=enabled, by_user=ctx.author.id)
-            await ctx.send(f"Anti-spam is now **{state}** for this server.")
+        enabled = state.value == 'on'
+        if self.spam_service.set_guild_enabled(interaction.guild_id, enabled):
+            self.logger.info("antispam_toggled", guild_id=interaction.guild_id,
+                             enabled=enabled, by_user=interaction.user.id)
+            await interaction.response.send_message(f"Anti-spam is now **{state.value}** for this server.")
         else:
-            await ctx.send("Failed to save the setting — check the logs.")
+            await interaction.response.send_message("Failed to save the setting — check the logs.",
+                                                    ephemeral=True)
+
+    # --- Discord AutoMod rules ----------------------------------------
+    automod = app_commands.Group(
+        name='automod', description="Discord AutoMod rules managed by this bot",
+        default_permissions=discord.Permissions(manage_guild=True),
+    )
+
+    @automod.command(name='setup', description="Install or update this bot's AutoMod rules here")
+    @app_commands.describe(alert_channel='Staff channel where AutoMod posts its alerts')
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def automod_setup(self, interaction: discord.Interaction, alert_channel: discord.TextChannel):
+        """Create/update the bot-managed AutoMod rules in this server."""
+        guild = interaction.guild
+        if not guild.me.guild_permissions.manage_guild:
+            await interaction.response.send_message(
+                "❌ I need the **Manage Server** permission to manage AutoMod rules.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        existing_rules = await guild.fetch_automod_rules()
+        existing = [(r.id, r.name, r.trigger.type.value) for r in existing_rules]
+        specs = self.automod_service.build_rule_specs(alert_channel.id)
+        steps = self.automod_service.plan_reconciliation(existing, specs)
+
+        lines = []
+        reason = f"Refold Helper /automod setup by {interaction.user}"
+        for op, rule_id, spec, note in steps:
+            try:
+                if op == 'create':
+                    rule = await guild.create_automod_rule(
+                        name=spec['name'],
+                        event_type=discord.AutoModRuleEventType.message_send,
+                        trigger=self._to_trigger(spec),
+                        actions=self._to_actions(spec),
+                        enabled=True,
+                        reason=reason,
+                    )
+                    self._automod_rule_names[rule.id] = rule.name
+                    lines.append(f"✅ Created **{spec['name']}**")
+                elif op == 'update':
+                    rule = await guild.fetch_automod_rule(rule_id)
+                    await rule.edit(trigger=self._to_trigger(spec), actions=self._to_actions(spec),
+                                    enabled=True, reason=reason)
+                    self._automod_rule_names[rule_id] = spec['name']
+                    lines.append(f"🔄 Updated **{spec['name']}**")
+                else:
+                    lines.append(f"⏭️ Skipped **{spec['name']}** — {note}")
+            except discord.HTTPException as e:
+                self.logger.error("automod_rule_apply_failed", guild_id=guild.id, op=op,
+                                  rule=spec['name'], error=str(e), error_type=type(e).__name__)
+                lines.append(f"❌ Failed to {op} **{spec['name']}**: {e.text or e}")
+
+        self.logger.info("automod_setup_completed", guild_id=guild.id, by_user=interaction.user.id,
+                         steps=[(op, spec['name']) for op, _, spec, _ in steps])
+        await interaction.followup.send("\n".join(lines), ephemeral=True)
+
+    @automod.command(name='status', description="Show this bot's AutoMod rules in this server")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def automod_status(self, interaction: discord.Interaction):
+        """List the bot-managed AutoMod rules and whether they are enabled."""
+        guild = interaction.guild
+        if not guild.me.guild_permissions.manage_guild:
+            await interaction.response.send_message(
+                "❌ I need the **Manage Server** permission to read AutoMod rules.", ephemeral=True)
+            return
+        rules = await guild.fetch_automod_rules()
+        expected = [spec['name'] for spec in self.automod_service.build_rule_specs(0)]
+        by_name = {r.name: r for r in rules}
+        lines = []
+        for name in expected:
+            rule = by_name.get(name)
+            if rule is None:
+                lines.append(f"⚪ **{name}** — not installed")
+            else:
+                lines.append(f"{'🟢' if rule.enabled else '🔴'} **{name}** — "
+                             f"{'enabled' if rule.enabled else 'disabled'}")
+        lines.append("\nRun `/automod setup` to install or update them.")
+        await interaction.response.send_message("\n".join(lines), ephemeral=True)
+
+    @staticmethod
+    def _to_trigger(spec: dict) -> discord.AutoModTrigger:
+        return discord.AutoModTrigger(type=discord.AutoModRuleTriggerType(spec['trigger_type']),
+                                      **spec['trigger'])
+
+    @staticmethod
+    def _to_actions(spec: dict) -> list:
+        return [discord.AutoModRuleAction(type=discord.AutoModRuleActionType(a['type']),
+                                          channel_id=a.get('channel_id'),
+                                          custom_message=a.get('custom_message'))
+                for a in spec['actions']]
 
     # --- Global kill switch + test mode (covers honeypot too) ----------
-    @commands.group(name='moderation', invoke_without_command=True,
-                    help='Master control for all spam/ban enforcement. '
-                         'Subcommands: status, enable, disable, testmode on|off',
-                    category='General Commands')
-    @commands.has_permissions(manage_guild=True)
-    async def moderation(self, ctx):
-        """Show the current global enforcement state."""
-        await self._send_mod_status(ctx)
+    moderation = app_commands.Group(
+        name='moderation',
+        description='Master control for all automatic spam/ban enforcement',
+        default_permissions=discord.Permissions(manage_guild=True),
+    )
 
-    @moderation.command(name='status', help='Show the enforcement state.')
-    @commands.has_permissions(manage_guild=True)
-    async def moderation_status(self, ctx):
-        await self._send_mod_status(ctx)
+    @moderation.command(name='status', description='Show the enforcement state')
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def moderation_status(self, interaction: discord.Interaction):
+        await self._send_mod_status(interaction)
 
-    @moderation.command(name='disable',
-                        help='EMERGENCY: turn OFF all automatic bans/timeouts.')
-    @commands.has_permissions(manage_guild=True)
-    async def moderation_disable(self, ctx):
+    @moderation.command(name='disable', description='EMERGENCY: turn OFF all automatic bans/timeouts')
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def moderation_disable(self, interaction: discord.Interaction):
         enforcement_state.set_enabled(False)
-        self.logger.warning("moderation_emergency_disabled", by_user=ctx.author.id)
-        await ctx.send("🛑 **EMERGENCY STOP.** All automatic spam/ban enforcement "
-                       "is now OFF (anti-spam **and** honeypot). Re-enable with "
-                       "`!moderation enable`.")
+        self.logger.warning("moderation_emergency_disabled", by_user=interaction.user.id)
+        await interaction.response.send_message(
+            "🛑 **EMERGENCY STOP.** All automatic spam/ban enforcement "
+            "is now OFF (anti-spam **and** honeypot). Re-enable with "
+            "`/moderation enable`.")
 
-    @moderation.command(name='enable',
-                        help='Turn automatic bans/timeouts back ON.')
-    @commands.has_permissions(manage_guild=True)
-    async def moderation_enable(self, ctx):
+    @moderation.command(name='enable', description='Turn automatic bans/timeouts back ON')
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def moderation_enable(self, interaction: discord.Interaction):
         enforcement_state.set_enabled(True)
-        self.logger.warning("moderation_re_enabled", by_user=ctx.author.id)
-        await ctx.send("✅ Automatic spam/ban enforcement is now **ON**.")
+        self.logger.warning("moderation_re_enabled", by_user=interaction.user.id)
+        await interaction.response.send_message("✅ Automatic spam/ban enforcement is now **ON**.")
 
-    @moderation.command(name='testmode',
-                        help='Detect-only mode: react instead of acting. '
-                             'Usage: !moderation testmode on|off')
-    @commands.has_permissions(manage_guild=True)
-    async def moderation_testmode(self, ctx, state: str = ''):
-        state = state.strip().lower()
-        if state not in ('on', 'off'):
-            await self._send_mod_status(ctx)
+    @moderation.command(name='testmode', description='Detect-only mode: react instead of acting')
+    @app_commands.describe(state='Turn test mode on or off (omit to see the current state)')
+    @app_commands.choices(state=[app_commands.Choice(name='on', value='on'),
+                                 app_commands.Choice(name='off', value='off')])
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def moderation_testmode(self, interaction: discord.Interaction,
+                                  state: Optional[app_commands.Choice[str]] = None):
+        if state is None:
+            await self._send_mod_status(interaction)
             return
-        enforcement_state.set_test_mode(state == 'on')
+        enforcement_state.set_test_mode(state.value == 'on')
         self.logger.warning("moderation_test_mode_set",
-                            test_mode=(state == 'on'), by_user=ctx.author.id)
-        if state == 'on':
-            await ctx.send(
+                            test_mode=(state.value == 'on'), by_user=interaction.user.id)
+        if state.value == 'on':
+            await interaction.response.send_message(
                 f"🧪 **Test mode ON.** No one will be banned, timed out, or have "
                 f"messages deleted. Triggering messages get a {ANTISPAM_TEST_REACTION_BAN}"
                 f"/{ANTISPAM_TEST_REACTION_TIMEOUT} reaction and a `[TEST]` mod-log entry. "
                 f"Applies to anti-spam and the honeypot — **staff included while testing**, "
                 f"so you can verify it yourself.")
         else:
-            await ctx.send("✅ **Test mode OFF.** Enforcement is live again.")
+            await interaction.response.send_message("✅ **Test mode OFF.** Enforcement is live again.")
 
-    async def _send_mod_status(self, ctx):
+    async def _send_mod_status(self, interaction: discord.Interaction):
         """Report the global enforcement + test-mode state."""
         snap = enforcement_state.snapshot()
-        guild_on = (ctx.guild is not None
-                    and self.spam_service.is_enabled_for_guild(ctx.guild.id))
+        guild_on = (interaction.guild_id is not None
+                    and self.spam_service.is_enabled_for_guild(interaction.guild_id))
         embed = discord.Embed(
             title='🛡️ Moderation enforcement status',
             color=0x2ECC71 if snap['enabled'] else 0xE74C3C,
@@ -536,22 +756,10 @@ class AntiSpam(commands.Cog):
         embed.add_field(name='Test mode',
                         value='🧪 ON (detect-only)' if snap['test_mode'] else 'off',
                         inline=True)
-        if ctx.guild is not None:
+        if interaction.guild_id is not None:
             embed.add_field(name='Anti-spam (this server)',
                             value='on' if guild_on else 'off', inline=True)
-        await ctx.send(embed=embed)
-
-    @spam_stats.error
-    @antispam_toggle.error
-    @moderation.error
-    @moderation_status.error
-    @moderation_enable.error
-    @moderation_disable.error
-    @moderation_testmode.error
-    async def _perm_error(self, ctx, error):
-        """Quietly inform users who lack permission."""
-        if isinstance(error, commands.MissingPermissions):
-            await ctx.send("You don't have permission to use this command.")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 def _looks_like_image(filename: str) -> bool:

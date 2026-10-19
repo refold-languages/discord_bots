@@ -1,336 +1,154 @@
 """
 Admin cog for Refold Helper Bot.
-Contains administrative commands for analytics, bot management, and data migration.
+Contains administrative commands for analytics and bot management.
 """
 
+from typing import List
+
 import discord
+from discord import app_commands
 from discord.ext import commands
 
-from config.constants import COMMUNITY_SERVERS, ALLOWED_ADMIN_USER_IDS, UNIQUE_USERS_FILE
-from services import MigrationService
+from config.constants import COMMUNITY_SERVERS, ALLOWED_ADMIN_USER_IDS
+
+
+def bot_admins_only():
+    """Restrict a slash command to the users in ALLOWED_ADMIN_USER_IDS."""
+    async def predicate(interaction: discord.Interaction) -> bool:
+        if interaction.user.id not in ALLOWED_ADMIN_USER_IDS:
+            raise app_commands.CheckFailure("You don't have permission to use this command.")
+        return True
+    return app_commands.check(predicate)
 
 
 class Admin(commands.Cog):
     """Administrative commands for bot management and analytics."""
-    
+
     def __init__(self, bot):
         self.bot = bot
-        self.migration_service = MigrationService()
 
-    async def cog_load(self):
-        """Initialize the migration service when cog loads."""
-        self.migration_service.initialize()
+    async def _cog_autocomplete(self, current: str) -> List[app_commands.Choice[str]]:
+        from cogs import COGS
+        names = [cog.split('.')[-1] for cog in COGS]
+        return [app_commands.Choice(name=n, value=n) for n in names if current.lower() in n][:25]
 
-    @commands.command(help='Checks the ping of the bot.', category='General Commands')
-    async def ping(self, ctx):
+    @app_commands.command(description='Checks the ping of the bot.')
+    async def ping(self, interaction: discord.Interaction):
         """Check bot latency."""
-        await ctx.send(f'Pong! The bot\'s latency is {round(self.bot.latency * 1000)}ms')
+        await interaction.response.send_message(
+            f'Pong! The bot\'s latency is {round(self.bot.latency * 1000)}ms')
 
-    @commands.command()
-    @commands.has_permissions(administrator=True)
-    async def reload(self, ctx, *, cog_name: str = None):
+    @app_commands.command(description="Reload a cog, or 'all' of them")
+    @app_commands.describe(cog_name="Cog to reload, or 'all'")
+    @app_commands.default_permissions(administrator=True)
+    @bot_admins_only()
+    async def reload(self, interaction: discord.Interaction, cog_name: str):
         """Reload a cog. Use 'all' to reload all cogs."""
-        if ctx.author.id not in ALLOWED_ADMIN_USER_IDS:
-            await ctx.send("You don't have permission to use this command.")
-            return
-        
         if cog_name == "all":
             # Reload all cogs
             from cogs import COGS
             reloaded = []
             failed = []
-            
+
             for cog in COGS:
+                if cog not in self.bot.extensions:
+                    continue  # deliberately skipped at startup (missing intent)
                 try:
                     await self.bot.reload_extension(cog)
                     reloaded.append(cog)
                 except Exception as e:
                     failed.append(f"{cog}: {str(e)}")
-            
+
             embed = discord.Embed(title="Reload All Results", color=0x00ff00 if not failed else 0xff9900)
             if reloaded:
                 embed.add_field(name="✅ Reloaded", value="\n".join(reloaded), inline=False)
             if failed:
-                embed.add_field(name="❌ Failed", value="\n".join(failed), inline=False)
-            
-            await ctx.send(embed=embed)
-        
-        elif cog_name:
-            # Reload specific cog
-            try:
-                await self.bot.reload_extension(f"cogs.{cog_name}")
-                await ctx.send(f"✅ Reloaded `cogs.{cog_name}`")
-            except Exception as e:
-                await ctx.send(f"❌ Failed to reload `cogs.{cog_name}`: {str(e)}")
-        
-        else:
-            # Show available cogs
-            from cogs import COGS
-            cog_list = [cog.split('.')[-1] for cog in COGS]
-            await ctx.send(f"Usage: `!reload <cog_name>` or `!reload all`\nAvailable cogs: {', '.join(cog_list)}")
+                embed.add_field(name="❌ Failed", value="\n".join(failed)[:1024], inline=False)
 
-    @commands.command()
-    @commands.has_permissions(administrator=True) 
-    async def unload(self, ctx, *, cog_name: str):
-        """Unload a cog."""
-        if ctx.author.id not in ALLOWED_ADMIN_USER_IDS:
-            await ctx.send("You don't have permission to use this command.")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
+        try:
+            await self.bot.reload_extension(f"cogs.{cog_name}")
+            await interaction.response.send_message(f"✅ Reloaded `cogs.{cog_name}`", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Failed to reload `cogs.{cog_name}`: {str(e)}",
+                                                    ephemeral=True)
+
+    @reload.autocomplete('cog_name')
+    async def _reload_autocomplete(self, interaction: discord.Interaction, current: str):
+        return [app_commands.Choice(name='all', value='all')] + (await self._cog_autocomplete(current))[:24]
+
+    @app_commands.command(description='Unload a cog')
+    @app_commands.describe(cog_name='Cog to unload')
+    @app_commands.default_permissions(administrator=True)
+    @bot_admins_only()
+    async def unload(self, interaction: discord.Interaction, cog_name: str):
+        """Unload a cog."""
         try:
             await self.bot.unload_extension(f"cogs.{cog_name}")
-            await ctx.send(f"✅ Unloaded `cogs.{cog_name}`")
+            await interaction.response.send_message(f"✅ Unloaded `cogs.{cog_name}`", ephemeral=True)
         except Exception as e:
-            await ctx.send(f"❌ Failed to unload `cogs.{cog_name}`: {str(e)}")
+            await interaction.response.send_message(f"❌ Failed to unload `cogs.{cog_name}`: {str(e)}",
+                                                    ephemeral=True)
 
-    @commands.command()
-    @commands.has_permissions(administrator=True)
-    async def load(self, ctx, *, cog_name: str):
+    @app_commands.command(description='Load a cog')
+    @app_commands.describe(cog_name='Cog to load')
+    @app_commands.default_permissions(administrator=True)
+    @bot_admins_only()
+    async def load(self, interaction: discord.Interaction, cog_name: str):
         """Load a cog."""
-        if ctx.author.id not in ALLOWED_ADMIN_USER_IDS:
-            await ctx.send("You don't have permission to use this command.")
-            return
-
         try:
             await self.bot.load_extension(f"cogs.{cog_name}")
-            await ctx.send(f"✅ Loaded `cogs.{cog_name}`")
+            await interaction.response.send_message(f"✅ Loaded `cogs.{cog_name}`", ephemeral=True)
         except Exception as e:
-            await ctx.send(f"❌ Failed to load `cogs.{cog_name}`: {str(e)}")
+            await interaction.response.send_message(f"❌ Failed to load `cogs.{cog_name}`: {str(e)}",
+                                                    ephemeral=True)
 
-    @commands.command()
-    @commands.has_permissions(administrator=True)
-    async def count_unique_users(self, ctx):
-        """Count unique users across all community servers (admin only)."""
-        if ctx.author.id not in ALLOWED_ADMIN_USER_IDS:
-            await ctx.send("You don't have permission to use this command.")
-            return
-            
-        unique_users = {}
+    @unload.autocomplete('cog_name')
+    @load.autocomplete('cog_name')
+    async def _load_autocomplete(self, interaction: discord.Interaction, current: str):
+        return await self._cog_autocomplete(current)
+
+    @app_commands.command(description='Push slash-command changes to Discord now')
+    @app_commands.describe(force='Sync even if the command definitions look unchanged')
+    @app_commands.default_permissions(administrator=True)
+    @bot_admins_only()
+    async def sync(self, interaction: discord.Interaction, force: bool = False):
+        """Sync the slash-command tree (startup already does this when it changes)."""
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        synced = await self.bot.sync_commands_if_changed(force=force)
+        await interaction.followup.send(
+            "✅ Slash commands synced." if synced else "ℹ️ No changes to sync (use `force` to sync anyway).",
+            ephemeral=True)
+
+    @app_commands.command(description='Approximate member counts across the community servers')
+    @app_commands.default_permissions(administrator=True)
+    @bot_admins_only()
+    async def membercounts(self, interaction: discord.Interaction):
+        """Report approximate member counts per community server.
+
+        Exact unique-user counts need the full member list, which requires the
+        Guild Members intent; Discord's approximate counts need no intent.
+        """
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        lines = []
+        total = 0
         for guild_id in COMMUNITY_SERVERS:
-            guild = self.bot.get_guild(guild_id)
-            if guild: 
-                for member in guild.members:
-                    if member.id in unique_users:
-                        unique_users[member.id]['guild_names'].append(guild.name)
-                        if member.joined_at < unique_users[member.id]['joined_at']:
-                            unique_users[member.id]['joined_at'] = member.joined_at
-                    else:
-                        unique_users[member.id] = {
-                            'name': member.name,
-                            'discriminator': member.discriminator,
-                            'guild_names': [guild.name],
-                            'joined_at': member.joined_at
-                        }
-        
-        # Write results to TSV file
-        with open(UNIQUE_USERS_FILE, 'w', encoding='utf-8') as file:
-            file.write("UUID\tName\tDiscriminator\tServer Names\tFirst Joined At\n")
-            for user_id, data in unique_users.items():
-                server_names = ", ".join(data['guild_names'])
-                first_joined_at = data['joined_at'].strftime('%Y-%m-%d %H:%M:%S')
-                file.write(f"{user_id}\t{data['name']}\t{data['discriminator']}\t{server_names}\t{first_joined_at}\n")
-        
-        await ctx.send(f"Unique users counted: {len(unique_users)}")
-        await ctx.send(file=discord.File(UNIQUE_USERS_FILE))
+            try:
+                guild = await self.bot.fetch_guild(guild_id, with_counts=True)
+            except discord.HTTPException:
+                lines.append(f"• `{guild_id}`: unavailable")
+                continue
+            count = guild.approximate_member_count or 0
+            total += count
+            lines.append(f"• {guild.name}: ~{count:,}")
 
-    @commands.command(hidden=True)
-    @commands.has_permissions(administrator=True)
-    async def migrate_data(self, ctx):
-        """Migrate legacy data files to new JSON format with schema validation."""
-        if ctx.author.id not in ALLOWED_ADMIN_USER_IDS:
-            await ctx.send("You don't have permission to use this command.")
-            return
-        
-        # Get migration status first
-        status = self.migration_service.get_migration_status()
-        
-        if not status["needs_migration"]:
-            await ctx.send("✅ No legacy files found. All data is already in modern format!")
-            
-            # Show current data summary
-            embed = discord.Embed(title="Data Summary", color=0x00ff00)
-            for data_type, info in status["data_summary"].items():
-                if info.get("exists", False):
-                    embed.add_field(
-                        name=data_type.replace("_", " ").title(),
-                        value=f"Items: {info.get('item_count', 0)}\nLast Updated: {info.get('last_updated', 'Unknown')}",
-                        inline=True
-                    )
-            await ctx.send(embed=embed)
-            return
-        
-        # Inform about files found
-        legacy_files = status["legacy_files_found"]
-        await ctx.send(f"🔍 Found {len(legacy_files)} legacy files to migrate:")
-        for file_path in legacy_files:
-            await ctx.send(f"  • `{file_path}`")
-        
-        await ctx.send("🚀 Starting migration...")
-        
-        # Perform migration
-        try:
-            report = self.migration_service.migrate_all_files()
-            
-            # Create migration report embed
-            embed = discord.Embed(title="Migration Report", color=0x00ff00 if report.failure_count == 0 else 0xff9900)
-            
-            embed.add_field(name="Files Found", value=str(report.total_found), inline=True)
-            embed.add_field(name="Successfully Migrated", value=str(report.success_count), inline=True)
-            embed.add_field(name="Failed", value=str(report.failure_count), inline=True)
-            
-            if report.files_migrated:
-                embed.add_field(
-                    name="✅ Migrated Files",
-                    value="\n".join(f"• {f}" for f in report.files_migrated),
-                    inline=False
-                )
-            
-            if report.backups_created:
-                embed.add_field(
-                    name="💾 Backups Created", 
-                    value=f"{len(report.backups_created)} backup files created",
-                    inline=False
-                )
-            
-            if report.errors:
-                embed.add_field(
-                    name="❌ Errors",
-                    value="\n".join(report.errors[:5]),  # Limit to first 5 errors
-                    inline=False
-                )
-            
-            await ctx.send(embed=embed)
-            
-            # Validate migration results
-            await ctx.send("🔍 Validating migrated data...")
-            validation_results = self.migration_service.validate_migration()
-            
-            all_valid = all(valid for valid, _ in validation_results.values())
-            if all_valid:
-                await ctx.send("✅ All migrated data passed validation!")
-            else:
-                await ctx.send("⚠️ Some validation issues found:")
-                for data_type, (valid, error) in validation_results.items():
-                    if not valid:
-                        await ctx.send(f"  • {data_type}: {error}")
-        
-        except Exception as e:
-            await ctx.send(f"❌ Migration failed: {str(e)}")
-
-    @commands.command(hidden=True)
-    @commands.has_permissions(administrator=True)
-    async def migration_status(self, ctx):
-        """Check the current migration status and data summary."""
-        if ctx.author.id not in ALLOWED_ADMIN_USER_IDS:
-            await ctx.send("You don't have permission to use this command.")
-            return
-        
-        try:
-            status = self.migration_service.get_migration_status()
-            
-            # Create status embed
-            embed = discord.Embed(
-                title="Migration Status", 
-                color=0xff9900 if status["needs_migration"] else 0x00ff00
-            )
-            
-            embed.add_field(
-                name="Migration Needed",
-                value="Yes" if status["needs_migration"] else "No",
-                inline=True
-            )
-            
-            embed.add_field(
-                name="All Data Valid",
-                value="Yes" if status["all_valid"] else "No",
-                inline=True
-            )
-            
-            if status["legacy_files_found"]:
-                embed.add_field(
-                    name="Legacy Files Found",
-                    value="\n".join(f"• {f}" for f in status["legacy_files_found"]),
-                    inline=False
-                )
-            
-            # Data summary
-            data_summary_text = []
-            for data_type, info in status["data_summary"].items():
-                if info.get("exists", False):
-                    count = info.get("item_count", 0)
-                    migrated = " (migrated)" if info.get("was_migrated", False) else ""
-                    data_summary_text.append(f"• {data_type}: {count} items{migrated}")
-                else:
-                    data_summary_text.append(f"• {data_type}: Not found")
-            
-            if data_summary_text:
-                embed.add_field(
-                    name="Data Summary",
-                    value="\n".join(data_summary_text),
-                    inline=False
-                )
-            
-            await ctx.send(embed=embed)
-            
-        except Exception as e:
-            await ctx.send(f"Error checking migration status: {str(e)}")
-
-    @commands.command(hidden=True)
-    @commands.has_permissions(administrator=True)
-    async def cleanup_legacy(self, ctx, confirm: str = None):
-        """Clean up legacy files after successful migration. Use 'confirm' to actually delete."""
-        if ctx.author.id not in ALLOWED_ADMIN_USER_IDS:
-            await ctx.send("You don't have permission to use this command.")
-            return
-        
-        if confirm != "confirm":
-            await ctx.send(
-                "⚠️ This command will archive legacy files after migration.\n"
-                "Use `!cleanup_legacy confirm` to proceed.\n"
-                "**Make sure migration was successful first!**"
-            )
-            return
-        
-        try:
-            success, message = self.migration_service.cleanup_legacy_files(confirm=True)
-            
-            if success:
-                await ctx.send(f"✅ {message}")
-            else:
-                await ctx.send(f"❌ {message}")
-                
-        except Exception as e:
-            await ctx.send(f"Error during cleanup: {str(e)}")
-
-    @commands.command(hidden=True)
-    @commands.has_permissions(administrator=True)
-    async def force_recreate_data(self, ctx, confirm: str = None):
-        """DANGER: Force recreate all data files with defaults. This will destroy existing data!"""
-        if ctx.author.id not in ALLOWED_ADMIN_USER_IDS:
-            await ctx.send("You don't have permission to use this command.")
-            return
-        
-        if confirm != "DESTROY_ALL_DATA":
-            await ctx.send(
-                "🚨 **DANGER: This will destroy all existing data!** 🚨\n"
-                "This command recreates all data files with default values.\n"
-                "Use `!force_recreate_data DESTROY_ALL_DATA` if you really want to do this.\n"
-                "**This action cannot be undone!**"
-            )
-            return
-        
-        try:
-            results = self.migration_service.force_recreate_data_files()
-            
-            embed = discord.Embed(title="Force Recreate Results", color=0xff0000)
-            for data_type, success in results.items():
-                status = "✅ Success" if success else "❌ Failed"
-                embed.add_field(name=data_type, value=status, inline=True)
-            
-            await ctx.send("🔥 All data files have been recreated with defaults!", embed=embed)
-            
-        except Exception as e:
-            await ctx.send(f"Error during force recreate: {str(e)}")
+        embed = discord.Embed(title="Community member counts (approximate)", color=0x3498DB,
+                              description="\n".join(lines)[:4000])
+        embed.set_footer(text=f"Sum: ~{total:,} (people in several servers are counted more than once)")
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 async def setup(bot):
